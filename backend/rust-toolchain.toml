@@ -1,0 +1,8 @@
+[toolchain]
+# On épingle le canal "stable" avec les composants nécessaires à la CI
+# (clippy + rustfmt). Pour des builds 100 % reproductibles en production,
+# remplacer "stable" par une version exacte (ex. "1.82.0") une fois la
+# toolchain mise en cache dans l'image de build.
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

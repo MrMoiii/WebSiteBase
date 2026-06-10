@@ -1,0 +1,70 @@
+# =============================================================================
+# Environnement de développement : PostgreSQL + API.
+#
+# La base est initialisée au premier démarrage :
+#   1. 00-roles.sql   : crée le rôle applicatif DML-only + droits par défaut.
+#   2. 10-init.sql    : la migration de schéma (montée depuis ./migrations).
+# La migration s'exécute en tant que `app_owner` (POSTGRES_USER), ce qui déclenche
+# l'octroi automatique des droits DML à `app_user`.
+#
+# NOTE : cet env est destiné au DEV. En production, les secrets viennent du
+# gestionnaire de secrets de l'orchestrateur (jamais en clair dans un compose).
+# =============================================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: websitebase
+      POSTGRES_USER: app_owner
+      POSTGRES_PASSWORD: owner_dev_pw
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
+      - ./migrations/20260610000001_init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_owner -d websitebase"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_BIND_ADDR: "0.0.0.0:8080"
+      APP_TRUSTED_PROXY_HOPS: "1"
+      # Rôle applicatif DML-only au runtime.
+      DATABASE_URL: "postgres://app_user:app_dev_pw@db:5432/websitebase"
+      DATABASE_MAX_CONNECTIONS: "10"
+      # En dev uniquement : remplacer par un secret fort en production.
+      JWT_SECRET: "dev_only_change_me_secret_at_least_32_bytes_long"
+      JWT_ISSUER: "websitebase"
+      JWT_ACCESS_TTL_SECONDS: "900"
+      REFRESH_TTL_SECONDS: "1209600"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      COOKIE_SECURE: "false"
+      MAX_BODY_BYTES: "1048576"
+      REQUEST_TIMEOUT_SECONDS: "15"
+      LOGIN_MAX_FAILED_ATTEMPTS: "5"
+      LOGIN_LOCKOUT_SECONDS: "900"
+      LOG_FILTER: "info"
+    ports:
+      - "8080:8080"
+    # --- Durcissement runtime ---
+    read_only: true                 # filesystem en lecture seule
+    tmpfs:
+      - /tmp                         # espace temporaire en mémoire si besoin
+    cap_drop:
+      - ALL                          # aucune capability Linux
+    security_opt:
+      - "no-new-privileges:true"     # interdit l'escalade de privilèges
+
+volumes:
+  pgdata:

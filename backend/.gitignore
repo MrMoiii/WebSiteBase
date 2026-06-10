@@ -1,0 +1,10 @@
+# Artefacts de build Rust
+/target
+
+# Secrets : ne JAMAIS committer de fichier .env réel (cf. exigence sécurité #8)
+.env
+.env.*
+!.env.example
+
+# Divers
+*.log

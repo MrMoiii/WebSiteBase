@@ -1,0 +1,52 @@
+# Configuration cargo-deny : contrôle des licences et des advisories de sécurité.
+# Exécuter : cargo deny check
+
+[advisories]
+# Base RustSec. Échoue sur toute vulnérabilité connue ou crate non maintenue.
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2026-0173 : `proc-macro-error2` non maintenu. Il s'agit d'une
+    # dépendance de COMPILATION (proc-macro) tirée par `validator_derive` ; aucun
+    # code n'est embarqué dans le binaire final et ce n'est PAS une vulnérabilité
+    # exploitable (avis "unmaintained"). À lever dès qu'une version de `validator`
+    # s'en affranchit. Réévalué : 2026-06-10.
+    "RUSTSEC-2026-0173",
+]
+
+[licenses]
+# Liste blanche de licences permissives compatibles avec une distribution
+# commerciale. Toute dépendance sous une autre licence fait échouer le build.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "OpenSSL",
+    # Bundle de certificats CA de Mozilla (webpki-roots).
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+# Exceptions ponctuelles par crate, si nécessaire (vide par défaut).
+exceptions = []
+
+[bans]
+# Refuse plusieurs versions majeures d'une même crate (réduit la surface).
+multiple-versions = "warn"
+wildcards = "deny"
+# Crates explicitement interdites (ex. anciennes crates non sûres).
+deny = []
+
+[sources]
+# N'autorise que crates.io comme registre de paquets.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

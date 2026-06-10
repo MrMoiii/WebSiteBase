@@ -1,0 +1,10 @@
+# Évite d'envoyer des artefacts lourds ou des secrets au contexte de build Docker.
+target/
+.git/
+.env
+.env.*
+!.env.example
+*.log
+README.md
+SECURITY.md
+.github/
