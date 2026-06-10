@@ -34,7 +34,7 @@ backend/
 │   ├── state.rs           # état applicatif partagé (config + pool)
 │   ├── auth/              # mots de passe (argon2), JWT, refresh tokens
 │   ├── db/                # accès données (sqlx query!/query_as!)
-│   ├── models/            # DTO validés (serde + validator) et vues
+│   ├── models/            # DTO validés (serde + garde) et vues
 │   ├── middleware/        # en-têtes sécurité, auth, contexte client, validation
 │   ├── handlers/          # logique des endpoints
 │   └── routes/            # assemblage du routeur + pile de middlewares
@@ -162,13 +162,25 @@ Couverture :
 ```bash
 cargo fmt --all --check          # formatage
 cargo clippy --all-targets -- -D warnings   # lint strict (zéro warning)
-cargo audit                      # advisories RustSec
-cargo deny check                 # licences + advisories + sources
+# Advisories RustSec + licences + sources, sur le graphe RÉELLEMENT résolu.
+cargo deny check
 ```
 
 La CI (`.github/workflows/ci.yml`) exécute l'ensemble à chaque push/PR. Le build
 et le lint utilisent le cache `.sqlx` (`SQLX_OFFLINE=true`) — aucune base requise
 pour compiler.
+
+> **Note audit / `rsa` (RUSTSEC-2023-0071).** `Cargo.lock` est un sur-ensemble :
+> il liste aussi les dépendances **optionnelles non activées**, dont le driver
+> MySQL de sqlx (qui tire `rsa`). Ces crates ne sont **jamais compilées** dans
+> notre binaire (PostgreSQL uniquement — vérifiable : aucun artefact `rsa`/
+> `sqlx-mysql` dans `target/`). `cargo audit` (qui lit le Cargo.lock brut) et
+> `cargo auditable` (qui sérialise tout le graphe résolu) remonteraient donc un
+> faux positif. On utilise par conséquent **`cargo deny`** comme autorité
+> d'audit des advisories : il raisonne sur le graphe de features réel et ne
+> signale pas `rsa`, ce qui permet une liste `ignore` **vide** (aucun avis
+> masqué). La validation d'entrée utilise **`garde`** (et non `validator`, qui
+> dépend de `proc-macro-error2`, non maintenu — RUSTSEC-2026-0173).
 
 ## API
 

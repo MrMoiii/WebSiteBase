@@ -5,8 +5,8 @@
 //!   max 128 pour éviter un DoS par hachage Argon2 d'une chaîne géante ;
 //! - email : max 320 (RFC 5321).
 
+use garde::Validate;
 use serde::{Deserialize, Serialize};
-use validator::Validate;
 
 use super::user::UserProfile;
 
@@ -14,11 +14,13 @@ use super::user::UserProfile;
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterRequest {
-    #[validate(email, length(max = 320))]
+    #[garde(email, length(chars, max = 320))]
     pub email: String,
-    #[validate(length(min = 12, max = 128))]
+    #[garde(length(chars, min = 12, max = 128))]
     pub password: String,
-    #[validate(length(min = 1, max = 100))]
+    // `inner(...)` applique la règle à la valeur interne quand `Some` ; `None`
+    // est ignoré (champ optionnel).
+    #[garde(inner(length(chars, min = 1, max = 100)))]
     pub display_name: Option<String>,
 }
 
@@ -28,9 +30,9 @@ pub struct RegisterRequest {
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct LoginRequest {
-    #[validate(email, length(max = 320))]
+    #[garde(email, length(chars, max = 320))]
     pub email: String,
-    #[validate(length(min = 1, max = 128))]
+    #[garde(length(chars, min = 1, max = 128))]
     pub password: String,
 }
 

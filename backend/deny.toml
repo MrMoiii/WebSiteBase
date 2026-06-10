@@ -6,14 +6,12 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = [
-    # RUSTSEC-2026-0173 : `proc-macro-error2` non maintenu. Il s'agit d'une
-    # dépendance de COMPILATION (proc-macro) tirée par `validator_derive` ; aucun
-    # code n'est embarqué dans le binaire final et ce n'est PAS une vulnérabilité
-    # exploitable (avis "unmaintained"). À lever dès qu'une version de `validator`
-    # s'en affranchit. Réévalué : 2026-06-10.
-    "RUSTSEC-2026-0173",
-]
+# Aucune dérogation : on ne masque aucun avis. `cargo deny` raisonne sur le
+# graphe de dépendances RÉEL (features résolues), donc la crate `rsa`
+# (RUSTSEC-2023-0071), tirée par le driver MySQL optionnel et NON activé de
+# sqlx, n'apparaît pas ici. `proc-macro-error2` (RUSTSEC-2026-0173) a été
+# éliminé en migrant de `validator` vers `garde`.
+ignore = []
 
 [licenses]
 # Liste blanche de licences permissives compatibles avec une distribution

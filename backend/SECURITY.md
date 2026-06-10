@@ -109,8 +109,12 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
   (non loggés).
 - **Pas de donnée sensible dans les URLs** : les jetons transitent par en-tête
   (`Authorization`) ou cookie, jamais en query string.
-- **Chaîne d'approvisionnement** : `Cargo.lock` committé, `cargo-deny` (licences +
-  advisories + sources), `cargo audit`, `clippy -D warnings`, `fmt --check` en CI.
+- **Chaîne d'approvisionnement** : `Cargo.lock` committé ; **`cargo-deny`** comme
+  autorité d'audit (advisories RustSec + licences + sources) car il raisonne sur
+  le graphe de features **réellement résolu** (contrairement à `cargo audit`, qui
+  lit le Cargo.lock brut) ; `clippy -D warnings` ; `fmt --check` — le tout en CI.
+- **Validation par `garde`** (et non `validator`) : choix délibéré pour éviter la
+  dépendance de compilation `proc-macro-error2`, non maintenue (RUSTSEC-2026-0173).
 
 ## Limites connues / travaux futurs
 
@@ -135,6 +139,16 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
   délégués à l'infrastructure (gestionnaire de secrets, TDE/volume chiffré).
 - **Purge des refresh tokens expirés** : un index existe ; prévoir un job de
   nettoyage périodique (non inclus).
+- **`rsa` / RUSTSEC-2023-0071 (faux positif lockfile)** : la crate `rsa` figure
+  dans `Cargo.lock` car le driver MySQL **optionnel** de sqlx y est listé (le
+  lockfile est un sur-ensemble), mais elle n'est **jamais compilée** (PostgreSQL
+  uniquement — vérifié : aucun artefact `rsa`/`sqlx-mysql` dans `target/`).
+  `cargo audit` (Cargo.lock brut) comme `cargo auditable` (graphe résolu complet)
+  la remonteraient à tort ; on s'appuie donc sur **`cargo deny`**, qui raisonne
+  sur le graphe de features réel et ne la signale pas — **sans aucun `--ignore`**.
+  À surveiller : si le driver MySQL devenait nécessaire, réévaluer le risque
+  (l'attaque exige la mesure du timing de déchiffrement RSA sur le canal d'auth
+  DB, réseau interne).
 
 ## Signalement de vulnérabilité
 

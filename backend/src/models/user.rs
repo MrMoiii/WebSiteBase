@@ -1,11 +1,11 @@
 //! Modèles liés à l'utilisateur : rôle, enregistrement en base, vues publiques
 //! et DTO de mise à jour. Toute entrée externe passe par un type strict annoté
-//! `#[serde(deny_unknown_fields)]` + `validator` (exigence sécurité #2).
+//! `#[serde(deny_unknown_fields)]` + `garde` (exigence sécurité #2).
 
+use garde::Validate;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
-use validator::Validate;
 
 /// Rôle métier. Mappé sur le type ENUM PostgreSQL `user_role`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -71,6 +71,6 @@ impl From<UserRecord> for UserProfile {
 #[serde(deny_unknown_fields)]
 pub struct UpdateProfileRequest {
     /// Nouveau nom d'affichage. `Some("")` est rejeté (longueur min 1).
-    #[validate(length(min = 1, max = 100))]
+    #[garde(inner(length(chars, min = 1, max = 100)))]
     pub display_name: Option<String>,
 }

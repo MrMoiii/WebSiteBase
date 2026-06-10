@@ -43,7 +43,9 @@ sqlx = { version = "0.8.3", default-features = false, features = [
 # --- Sérialisation / validation ---
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.137"
-validator = { version = "0.19.0", features = ["derive"] }
+# garde : validation par derive, sans dépendance proc-macro non maintenue
+# (contrairement à `validator`, qui tire `proc-macro-error2`, cf. RUSTSEC-2026-0173).
+garde = { version = "0.23.0", features = ["derive", "email"] }
 
 # --- Authentification ---
 argon2 = { version = "0.5.3", features = ["std"] }

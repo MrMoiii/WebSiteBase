@@ -171,17 +171,22 @@ impl From<sqlx::Error> for ApiError {
     }
 }
 
-impl From<validator::ValidationErrors> for ApiError {
-    fn from(e: validator::ValidationErrors) -> Self {
-        ApiError::Validation(summarize_validation(&e))
+impl From<garde::Report> for ApiError {
+    fn from(report: garde::Report) -> Self {
+        ApiError::Validation(summarize_validation(&report))
     }
 }
 
 /// Résume les erreurs de validation en un message court et sûr à exposer.
-/// On expose le nom des champs en faute mais pas de valeur reçue.
-fn summarize_validation(errors: &validator::ValidationErrors) -> String {
-    let mut fields: Vec<&str> = errors.field_errors().keys().copied().collect();
-    fields.sort_unstable();
+/// On expose le chemin des champs en faute mais JAMAIS la valeur reçue.
+fn summarize_validation(report: &garde::Report) -> String {
+    let mut fields: Vec<String> = report
+        .iter()
+        .map(|(path, _)| path.to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    fields.sort();
+    fields.dedup();
     if fields.is_empty() {
         "Invalid input.".to_string()
     } else {

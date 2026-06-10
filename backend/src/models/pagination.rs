@@ -1,7 +1,7 @@
 //! Pagination des listings (endpoint admin).
 
+use garde::Validate;
 use serde::{Deserialize, Serialize};
-use validator::Validate;
 
 /// Paramètres de pagination passés en query string.
 ///
@@ -10,9 +10,9 @@ use validator::Validate;
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct PaginationQuery {
-    #[validate(range(min = 1))]
+    #[garde(inner(range(min = 1)))]
     pub page: Option<i64>,
-    #[validate(range(min = 1, max = 100))]
+    #[garde(inner(range(min = 1, max = 100)))]
     pub page_size: Option<i64>,
 }
 

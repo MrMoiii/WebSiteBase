@@ -93,20 +93,17 @@ jobs:
       - name: Lancer les tests
         run: cargo test --all-targets --locked
 
-  # --- Audit de sécurité des dépendances (RustSec) -------------------------
-  audit:
-    name: cargo audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-audit
-      - name: cargo audit
-        run: cargo audit
-
-  # --- Contrôle licences + advisories + sources (cargo-deny) ---------------
+  # --- Audit des advisories RustSec + licences + sources (cargo-deny) -------
+  #
+  # On utilise cargo-deny (et NON cargo-audit) comme autorité d'audit des
+  # advisories. Raison : cargo-audit lit le Cargo.lock brut, qui est un
+  # sur-ensemble incluant les dépendances OPTIONNELLES non activées — par ex. le
+  # driver MySQL de sqlx, qui tire `rsa` (RUSTSEC-2023-0071). Ces crates ne sont
+  # JAMAIS compilées dans notre binaire (PostgreSQL uniquement, vérifié : aucun
+  # artefact `rsa`/`sqlx-mysql`), et `cargo auditable` les embarque aussi car il
+  # sérialise tout le graphe résolu. cargo-deny, lui, raisonne sur le graphe de
+  # features RÉELLEMENT résolu : il ne remonte donc pas ce faux positif, ce qui
+  # nous permet de garder une liste `ignore` VIDE (aucun avis masqué).
   deny:
     name: cargo deny
     runs-on: ubuntu-latest

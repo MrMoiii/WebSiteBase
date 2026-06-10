@@ -1,14 +1,14 @@
 //! Extracteurs validés : toute entrée externe (body JSON, query string) est
 //! d'abord désérialisée dans un type strict (`#[serde(deny_unknown_fields)]`)
-//! PUIS validée par `validator` avant d'atteindre la logique métier
+//! PUIS validée par `garde` avant d'atteindre la logique métier
 //! (exigence sécurité #2 : rejeter par défaut).
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Json, Query, Request};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
+use garde::Validate;
 use serde::de::DeserializeOwned;
-use validator::Validate;
 
 use crate::errors::ApiError;
 use crate::state::AppState;
@@ -19,6 +19,8 @@ pub struct ValidatedJson<T>(pub T);
 impl<T> FromRequest<AppState> for ValidatedJson<T>
 where
     T: DeserializeOwned + Validate,
+    // Les DTO utilisent le contexte par défaut `()` ; `validate()` l'exige.
+    T::Context: Default,
 {
     type Rejection = ApiError;
 
@@ -26,7 +28,7 @@ where
         let Json(value) = Json::<T>::from_request(req, state)
             .await
             .map_err(map_json_rejection)?;
-        // `validate()` renvoie une `ValidationErrors` -> 422 via `From`.
+        // `validate()` renvoie un `garde::Report` -> 422 via `From`.
         value.validate()?;
         Ok(ValidatedJson(value))
     }
@@ -38,6 +40,7 @@ pub struct ValidatedQuery<T>(pub T);
 impl<T> FromRequestParts<AppState> for ValidatedQuery<T>
 where
     T: DeserializeOwned + Validate,
+    T::Context: Default,
 {
     type Rejection = ApiError;
 
