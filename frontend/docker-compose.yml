@@ -1,0 +1,50 @@
+# =============================================================================
+# Environnement de développement du FRONTEND, s'intégrant au compose du
+# backend (réseau partagé).
+#
+# Usage :
+#   1. cd ../backend && docker compose up -d      # crée le réseau backend_default
+#   2. cd ../frontend && docker compose up --build
+#
+# Le frontend joint le réseau du backend et parle à l'API via son nom de
+# service interne (http://api:8080) : l'URL de l'API n'est jamais exposée au
+# navigateur (pattern BFF).
+#
+# NOTE : cet env est destiné au DEV. En production, les secrets viennent du
+# gestionnaire de secrets de l'orchestrateur (jamais en clair dans un compose),
+# COOKIE_SECURE=true et un reverse proxy TLS est en frontal.
+# =============================================================================
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # API jointe via le réseau interne partagé — pas le port publié.
+      API_BASE_URL: "http://api:8080"
+      # En dev uniquement : remplacer par un secret fort en production
+      # (openssl rand -base64 48).
+      SESSION_SECRET: "dev_only_change_me_session_secret_32+chars"
+      # Dev HTTP local. true en production (HTTPS + cookie __Host-).
+      COOKIE_SECURE: "false"
+      APP_ALLOWED_ORIGINS: ""
+    ports:
+      - "3000:3000"
+    networks:
+      - backend
+    # --- Durcissement runtime (aligné sur le backend) ---
+    read_only: true                  # filesystem en lecture seule…
+    tmpfs:
+      - /tmp                         # …hors espaces temporaires en mémoire
+      - /app/.next/cache             # cache d'optimisation de Next.js
+    cap_drop:
+      - ALL                          # aucune capability Linux
+    security_opt:
+      - "no-new-privileges:true"     # interdit l'escalade de privilèges
+
+networks:
+  # Réseau créé par `docker compose up` dans ../backend (projet "backend").
+  backend:
+    name: backend_default
+    external: true

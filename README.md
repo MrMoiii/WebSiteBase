@@ -8,7 +8,14 @@ introduite via une *pull request* dédiée vers `main`.
 | Composant | Emplacement | État |
 |---|---|---|
 | Backend (API REST Rust/Axum sécurisée) | [`backend/`](./backend) | en cours d'intégration (PR) |
-| Frontend | _à venir_ | — |
+| Frontend (Next.js/TypeScript sécurisé, pattern BFF) | [`frontend/`](./frontend) | en cours d'intégration (PR) |
+
+## Démarrage rapide (stack complète)
+
+```bash
+cd backend && docker compose up -d --build   # API + PostgreSQL
+cd ../frontend && docker compose up --build  # frontend sur http://localhost:3000
+```
 
 ## Contribution
 
@@ -16,4 +23,5 @@ introduite via une *pull request* dédiée vers `main`.
 - Chaque brique est développée sur une branche dédiée et fusionnée par PR après
   passage de la CI.
 
-Voir le [README du backend](./backend/README.md) pour le détail de cette partie.
+Voir le [README du backend](./backend/README.md) et le
+[README du frontend](./frontend/README.md) pour le détail de chaque partie.
