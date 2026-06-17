@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { E2E_PASSWORD, loginViaUi, registerViaUi, uniqueEmail } from "./helpers";
+import {
+  E2E_PASSWORD,
+  loginViaUi,
+  registerViaApi,
+  registerViaUi,
+  uniqueEmail,
+} from "./helpers";
 
 /** Parcours nominaux : inscription, profil, édition, logout, login + retour. */
 
@@ -36,10 +42,10 @@ test("inscription -> profil -> édition -> logout -> login avec retour post-auth
 
 test("login avec mauvais mot de passe -> message générique, pas d'oracle", async ({
   page,
+  request,
 }) => {
   const email = uniqueEmail("wrongpw");
-  await registerViaUi(page, email);
-  await page.getByRole("button", { name: "Se déconnecter" }).click();
+  await registerViaApi(request, email);
 
   await loginViaUi(page, email, "mauvais-mot-de-passe-123");
   await expect(page.getByText("Email ou mot de passe incorrect.")).toBeVisible();

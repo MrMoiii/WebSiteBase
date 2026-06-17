@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { E2E_PASSWORD, registerViaUi, uniqueEmail } from "./helpers";
+import {
+  E2E_PASSWORD,
+  registerViaApi,
+  registerViaUi,
+  uniqueEmail,
+} from "./helpers";
 
 /**
  * Cas d'ATTAQUE (exigence qualité) : routes protégées sans session, open
@@ -55,6 +60,15 @@ test.describe("protection des routes", () => {
 });
 
 test.describe("open redirect", () => {
+  // Un SEUL compte partagé, créé directement via l'API backend : la boucle
+  // de cas ne fait alors qu'un login par test, ce qui reste sous le rate
+  // limiting par IP du backend sur /auth/* (2 req/s, burst 10).
+  const email = uniqueEmail("redirect");
+
+  test.beforeAll(async ({ request }) => {
+    await registerViaApi(request, email);
+  });
+
   for (const evil of [
     "https://evil.example/phishing",
     "//evil.example",
@@ -63,11 +77,6 @@ test.describe("open redirect", () => {
     "javascript:alert(1)",
   ]) {
     test(`?next=${evil} retombe sur la destination par défaut`, async ({ page }) => {
-      const email = uniqueEmail("redirect");
-      await registerViaUi(page, email);
-      await page.getByRole("button", { name: "Se déconnecter" }).click();
-      await expect(page).toHaveURL(/\/login$/);
-
       await page.goto(`/login?next=${encodeURIComponent(evil)}`);
       await page.getByLabel("Adresse email").fill(email);
       await page.getByLabel("Mot de passe").fill(E2E_PASSWORD);

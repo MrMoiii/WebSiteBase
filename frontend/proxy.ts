@@ -106,10 +106,18 @@ export default async function proxy(request: NextRequest): Promise<NextResponse>
   const { pathname } = request.nextUrl;
 
   // --- Protection de routes (premier rideau) -----------------------------
+  // Les POST de Server Actions (en-tête Next-Action) ne sont PAS redirigés
+  // ici : le routeur client ne sait interpréter qu'une redirection émise par
+  // l'action elle-même via redirect() — une 307 brute du middleware laisserait
+  // la page figée. Sans risque : chaque action revérifie la session côté
+  // serveur (getAuthContext) et redirige proprement (reason=expired), et le
+  // backend revérifie le token à chaque appel.
+  const isServerActionPost =
+    request.method === "POST" && request.headers.has("next-action");
   const isProtected = PROTECTED_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
-  if (isProtected) {
+  if (isProtected && !isServerActionPost) {
     const session = await readSession(request);
 
     if (session?.user === undefined) {

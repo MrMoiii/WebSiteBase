@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
 /** Génère un email unique par exécution (la base de dev n'est pas purgée). */
 export function uniqueEmail(prefix: string): string {
@@ -21,6 +21,22 @@ export async function registerViaUi(
   await page.getByLabel("Mot de passe").fill(E2E_PASSWORD);
   await page.getByRole("button", { name: "Créer mon compte" }).click();
   await expect(page).toHaveURL(/\/profile$/);
+}
+
+/**
+ * Crée un compte directement via l'API backend (1 seul appel /auth/*).
+ * À préférer quand l'inscription n'est pas l'objet du test : limite la
+ * pression sur le rate limiting par IP du backend (2 req/s, burst 10).
+ */
+export async function registerViaApi(
+  request: APIRequestContext,
+  email: string,
+): Promise<void> {
+  const apiBase = process.env.API_BASE_URL ?? "http://localhost:8080";
+  const res = await request.post(`${apiBase}/api/v1/auth/register`, {
+    data: { email, password: E2E_PASSWORD },
+  });
+  expect(res.status()).toBe(201);
 }
 
 /** Connexion via l'UI (sans présupposer la destination). */
