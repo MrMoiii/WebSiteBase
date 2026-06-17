@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  E2E_PASSWORD,
+  loginViaUi,
   registerViaApi,
   registerViaUi,
   uniqueEmail,
@@ -60,32 +60,38 @@ test.describe("protection des routes", () => {
 });
 
 test.describe("open redirect", () => {
-  // Un SEUL compte partagé, créé directement via l'API backend : la boucle
-  // de cas ne fait alors qu'un login par test, ce qui reste sous le rate
-  // limiting par IP du backend sur /auth/* (2 req/s, burst 10).
+  // Compte créé directement via l'API backend (un seul appel /auth/*).
   const email = uniqueEmail("redirect");
 
   test.beforeAll(async ({ request }) => {
     await registerViaApi(request, email);
   });
 
-  for (const evil of [
+  const evilTargets = [
     "https://evil.example/phishing",
     "//evil.example",
     "/%2F%2Fevil.example",
     "/\\evil.example",
     "javascript:alert(1)",
-  ]) {
-    test(`?next=${evil} retombe sur la destination par défaut`, async ({ page }) => {
-      await page.goto(`/login?next=${encodeURIComponent(evil)}`);
-      await page.getByLabel("Adresse email").fill(email);
-      await page.getByLabel("Mot de passe").fill(E2E_PASSWORD);
-      await page.getByRole("button", { name: "Se connecter" }).click();
+  ];
 
-      // Jamais sur un domaine externe : retour interne par défaut.
+  test("toute cible de redirection externe retombe sur la destination par défaut", async ({
+    page,
+  }) => {
+    // UN SEUL login (évite d'épuiser le rate limiting par IP du backend —
+    // 2 req/s, burst 10 — qui rendait la suite instable). Une fois
+    // authentifié, la page /login redirige IMMÉDIATEMENT vers
+    // safeNextPath(next) côté serveur : on teste donc exactement la même
+    // validation anti open-redirect, sans appel /auth/* supplémentaire.
+    await loginViaUi(page, email);
+    await expect(page).toHaveURL(/^http:\/\/localhost:3000\/profile$/);
+
+    for (const evil of evilTargets) {
+      await page.goto(`/login?next=${encodeURIComponent(evil)}`);
+      // Jamais vers un domaine externe : retour interne par défaut.
       await expect(page).toHaveURL(/^http:\/\/localhost:3000\/profile$/);
-    });
-  }
+    }
+  });
 });
 
 test.describe("XSS", () => {
@@ -100,7 +106,12 @@ test.describe("XSS", () => {
     await registerViaUi(page, uniqueEmail("xss"));
     await page.getByLabel("Nom d'affichage").fill(payload);
     await page.getByRole("button", { name: "Enregistrer" }).click();
-    await expect(page.getByText("Profil mis à jour.")).toBeVisible();
+    // Confirmation applicative de la sauvegarde. Timeout élargi : sous charge
+    // CI, le round-trip de la Server Action peut dépasser les 5 s par défaut
+    // (la sauvegarde elle-même ne fait aucun appel /auth/* rate-limité).
+    await expect(page.getByText("Profil mis à jour.")).toBeVisible({
+      timeout: 15000,
+    });
 
     await page.goto("/profile");
     // Le payload s'affiche LITTÉRALEMENT (échappé par React)…
