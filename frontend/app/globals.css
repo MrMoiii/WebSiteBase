@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/*
+ * Styles globaux minimaux. Tout le reste passe par les utilitaires Tailwind
+ * compilés en CSS statique (pas de CSS-in-JS injecté dynamiquement).
+ */
+
+:root {
+  color-scheme: light;
+}
+
+/* Accessibilité : focus toujours visible (exigence accessibilité de base). */
+:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
+}

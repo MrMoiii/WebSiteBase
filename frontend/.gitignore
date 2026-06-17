@@ -1,0 +1,22 @@
+# Dépendances
+/node_modules
+
+# Next.js
+/.next/
+/out/
+next-env.d.ts
+
+# Tests
+/coverage
+/test-results/
+/playwright-report/
+/blob-report/
+
+# Environnement local : JAMAIS committer de secrets.
+.env
+.env.local
+.env.*.local
+
+# Divers
+*.tsbuildinfo
+npm-debug.log*
