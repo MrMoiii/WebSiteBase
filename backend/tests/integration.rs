@@ -361,6 +361,68 @@ async fn pagination_rejects_out_of_range() {
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+// --- Recherche (/search) ----------------------------------------------------
+// NB : ces tests tournent sans cluster OpenSearch. La recherche n'étant pas
+// configurée en test (`Config::for_tests` => search None), l'endpoint répond
+// 503 une fois l'authentification et la validation passées — ce qui permet de
+// vérifier la chaîne auth -> validation -> dépendance sans dépendre d'un
+// cluster. Les tests bout-en-bout avec OpenSearch sont décrits dans SEARCH.md.
+
+#[tokio::test]
+async fn search_requires_authentication() {
+    let app = spawn_app().await;
+    let resp = client()
+        .get(app.url("/api/v1/search?q=hello"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn search_rejects_unknown_query_param() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+    // Paramètre inconnu => deny_unknown_fields => 400 (pas de canal caché).
+    let resp = c
+        .get(app.url("/api/v1/search?q=hello&raw_dsl=%7B%7D"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn search_rejects_empty_query() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+    // q vide => échec de validation (422) avant même d'atteindre le service.
+    let resp = c
+        .get(app.url("/api/v1/search?q="))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn search_unavailable_when_disabled() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+    // Requête valide + auth OK, mais recherche non configurée => 503 générique.
+    let resp = c
+        .get(app.url("/api/v1/search?q=hello&page=1&page_size=10"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "service_unavailable");
+}
+
 #[tokio::test]
 async fn unknown_route_is_not_found() {
     let app = spawn_app().await;

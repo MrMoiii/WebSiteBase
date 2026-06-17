@@ -19,7 +19,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{admin, auth, health, users};
+use crate::handlers::{admin, auth, health, search, users};
 use crate::middleware::security_headers::SECURITY_HEADERS;
 use crate::state::AppState;
 
@@ -54,11 +54,29 @@ pub fn build_router(state: AppState) -> Router {
         .route("/logout", post(auth::logout))
         .layer(rate_limit);
 
+    // --- Rate limiting renforcé de /search (anti-scraping) ------------------
+    // Quota plus strict que les routes courantes : rafale de 15, 1 jeton/s. Une
+    // recherche est plus coûteuse et une rafale élevée trahit un scraping.
+    let search_governor = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(1)
+            .burst_size(15)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("configuration governor (search) valide"),
+    );
+    let search_routes = Router::new()
+        .route("/search", get(search::search))
+        .layer(GovernorLayer {
+            config: search_governor,
+        });
+
     // Routes métier (l'autorisation est imposée par les extracteurs des handlers).
     let api_routes = Router::new()
         .nest("/auth", auth_routes)
         .route("/users/me", get(users::get_me).patch(users::update_me))
-        .route("/admin/users", get(admin::list_users));
+        .route("/admin/users", get(admin::list_users))
+        .merge(search_routes);
 
     let mut app = Router::new()
         .route("/health", get(health::liveness))

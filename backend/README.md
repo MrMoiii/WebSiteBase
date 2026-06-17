@@ -7,6 +7,9 @@ logs **JSON structurés** (tracing).
 
 > Voir [`SECURITY.md`](./SECURITY.md) pour le modèle de menace, les contrôles
 > implémentés (mappés sur l'OWASP API Security Top 10) et les limites connues.
+> Voir [`SEARCH.md`](./SEARCH.md) pour l'intégration **OpenSearch** (moteur de
+> recherche secondaire, optionnel) : architecture, flux sécurisés, mapping,
+> stratégie d'indexation et checklist sécurité.
 
 ## Sommaire
 
@@ -37,6 +40,7 @@ backend/
 │   ├── models/            # DTO validés (serde + garde) et vues
 │   ├── middleware/        # en-têtes sécurité, auth, contexte client, validation
 │   ├── handlers/          # logique des endpoints
+│   ├── search/            # recherche OpenSearch (client TLS, service, query DSL, index)
 │   └── routes/            # assemblage du routeur + pile de middlewares
 ├── migrations/            # migrations SQL versionnées (sqlx)
 ├── .sqlx/                 # cache des requêtes pour build hors-ligne (SQLX_OFFLINE)
@@ -77,6 +81,10 @@ Copier ce fichier en `.env` pour le développement local.
 | `LOGIN_MAX_FAILED_ATTEMPTS` | | `5` | Seuil de verrouillage de compte. |
 | `LOGIN_LOCKOUT_SECONDS` | | `900` | Durée du verrouillage. |
 | `LOG_FILTER` | | `info` | Filtre de logs (syntaxe `RUST_LOG`). |
+| `OPENSEARCH_URL` | | — | Active la recherche si défini. **DOIT** être `https://`. Voir [`SEARCH.md`](./SEARCH.md). |
+| `OPENSEARCH_API_KEY` / `OPENSEARCH_USERNAME`+`OPENSEARCH_PASSWORD` | (si search) | — | Auth backend ↔ cluster (ApiKey prioritaire). |
+| `OPENSEARCH_CA_CERT_PATH` / `OPENSEARCH_CLIENT_IDENTITY_PATH` | | — | CA privée / identité mTLS (PEM). |
+| `OPENSEARCH_INDEX_PREFIX`, `OPENSEARCH_MULTI_TENANT`, `OPENSEARCH_MAX_*`, `OPENSEARCH_TIMEOUT_SECONDS` | | cf. `.env.example` | Index, isolation et bornes de sécurité. |
 
 Le démarrage **échoue immédiatement** si une variable obligatoire manque. Les
 secrets ne sont **jamais** loggés (le type `Secret` masque sa valeur en `Debug`).
@@ -199,6 +207,7 @@ Un correlation id est renvoyé dans l'en-tête `x-request-id`.
 | `GET` | `/api/v1/users/me` | Bearer | Lecture de son profil. |
 | `PATCH` | `/api/v1/users/me` | Bearer | Mise à jour de son profil. |
 | `GET` | `/api/v1/admin/users` | Bearer (admin) | Liste paginée des utilisateurs. |
+| `GET` | `/api/v1/search` | Bearer | Recherche plein-texte sécurisée (OpenSearch). `503` si désactivée. Voir [`SEARCH.md`](./SEARCH.md). |
 
 Les endpoints sensibles (`/auth/*`) sont soumis à un **rate limiting par IP**.
 Le **token d'accès** est transmis via `Authorization: Bearer <token>`. Le

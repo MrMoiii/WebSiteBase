@@ -1,0 +1,69 @@
+# =============================================================================
+# Overlay : OpenSearch SÉCURISÉ (TLS + plugin security) pour le développement.
+#
+# Usage :
+#   ./docker/opensearch/generate-certs.sh           # PKI locale (non committée)
+#   docker compose -f docker-compose.yml -f docker-compose.search.yml up -d --build
+#
+# Sécurité :
+#  - le cluster n'expose AUCUN port sur l'hôte (`ports:` absent) : il n'est
+#    joignable que sur le réseau Docker interne, exclusivement par l'API ;
+#  - TLS activé sur la couche REST (le backend s'y connecte en https://) ;
+#  - config de démo désactivée ; certificats et opensearch.yml montés en RO.
+#
+# En PRODUCTION : cluster dédié managé, PKI gérée, secrets via le gestionnaire
+# de secrets de l'orchestrateur — jamais ce compose tel quel.
+# =============================================================================
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    environment:
+      - discovery.type=single-node
+      # Désactive l'auto-installation de la config de démo (certs/users faibles).
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      # Mot de passe initial de l'admin (dev). En prod : secret managé.
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Dev_Strong_Passw0rd!
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+      - ./docker/opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - ./docker/opensearch/certs:/usr/share/opensearch/config/certs:ro
+    # Pas de `ports:` : jamais exposé hors du réseau Docker interne.
+    healthcheck:
+      # -k : la CA locale n'est pas dans le magasin du conteneur ; on vérifie
+      # seulement que le endpoint TLS répond (le backend, lui, valide la CA).
+      test: ["CMD-SHELL", "curl -sk https://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    security_opt:
+      - "no-new-privileges:true"
+
+  api:
+    depends_on:
+      db:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    environment:
+      # Active la recherche dans l'API (cf. config.rs / SEARCH.md).
+      OPENSEARCH_URL: "https://opensearch:9200"
+      OPENSEARCH_USERNAME: "admin"
+      OPENSEARCH_PASSWORD: "Dev_Strong_Passw0rd!"
+      OPENSEARCH_CA_CERT_PATH: "/etc/opensearch-certs/ca.pem"
+      # mTLS (optionnel) : décommenter pour l'authentification mutuelle.
+      # OPENSEARCH_CLIENT_IDENTITY_PATH: "/etc/opensearch-certs/client-identity.pem"
+      OPENSEARCH_INDEX_PREFIX: "documents"
+      OPENSEARCH_MULTI_TENANT: "false"
+    volumes:
+      # La CA locale est montée en lecture seule pour valider le certificat TLS
+      # du cluster (pas de désactivation de la vérification).
+      - ./docker/opensearch/certs:/etc/opensearch-certs:ro
+
+volumes:
+  opensearch-data:

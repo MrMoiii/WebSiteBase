@@ -29,6 +29,14 @@ export async function SiteHeader() {
             <>
               <li>
                 <Link
+                  href="/search"
+                  className="text-slate-700 hover:text-slate-900 hover:underline"
+                >
+                  Recherche
+                </Link>
+              </li>
+              <li>
+                <Link
                   href="/profile"
                   className="text-slate-700 hover:text-slate-900 hover:underline"
                 >

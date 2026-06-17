@@ -1,0 +1,42 @@
+# =============================================================================
+# Configuration OpenSearch durcie (overlay docker-compose.search.yml).
+#
+# - Plugin de sécurité ACTIVÉ, config de démo DÉSACTIVÉE (certs/users réels).
+# - TLS sur la couche transport ET la couche REST (HTTP) : chiffrement en
+#   transit obligatoire, y compris pour le backend (mTLS possible).
+# - Le nœud n'est joignable que sur le réseau Docker interne (pas de port publié).
+#
+# NB : la config des UTILISATEURS/RÔLES (internal_users.yml, roles.yml…) est
+# appliquée par securityadmin.sh au premier démarrage — voir SEARCH.md. Ce
+# fichier ne couvre que la couche TLS et l'identité du nœud.
+# =============================================================================
+
+network.host: 0.0.0.0
+discovery.type: single-node
+
+# --- TLS transport (inter-nœuds) ---
+plugins.security.ssl.transport.pemcert_filepath: certs/node.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/node.key
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: false
+
+# --- TLS REST (HTTP) : le backend s'y connecte en https:// ---
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/node.pem
+plugins.security.ssl.http.pemkey_filepath: certs/node.key
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/ca.pem
+# Active la demande du certificat client (mTLS) ; OPTIONAL pour tolérer aussi
+# l'authentification Basic/ApiKey. Mettre REQUIRE pour imposer le mTLS.
+plugins.security.ssl.http.clientauth_mode: OPTIONAL
+
+# --- Administration de la config de sécurité ---
+plugins.security.allow_default_init_securityindex: true
+plugins.security.authcz.admin_dn:
+  - "CN=admin,O=WebSiteBase"
+plugins.security.nodes_dn:
+  - "CN=opensearch,O=WebSiteBase"
+
+# Durcissement : pas de requêtes anonymes, audit des accès.
+plugins.security.restapi.roles_enabled:
+  - "all_access"
+plugins.security.audit.type: internal_opensearch

@@ -14,6 +14,7 @@ pub mod handlers;
 pub mod middleware;
 pub mod models;
 pub mod routes;
+pub mod search;
 pub mod state;
 pub mod telemetry;
 
@@ -50,8 +51,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // applicatif n'a pas de droits DDL). Elles sont jouées séparément avec le
     // rôle propriétaire (cf. README).
 
+    // 3bis) Service de recherche secondaire (OpenSearch), optionnel. Construit
+    // une seule fois ici (charge les certificats, monte le client TLS). Si la
+    // config est absente, la recherche est désactivée proprement.
+    let search = match &config.search {
+        Some(search_cfg) => {
+            let svc = search::SearchService::from_config(search_cfg)
+                .context("initialisation du service de recherche (OpenSearch)")?;
+            tracing::info!("service de recherche OpenSearch initialisé");
+            Some(std::sync::Arc::new(svc))
+        }
+        None => {
+            tracing::info!("recherche désactivée (OPENSEARCH_URL absent)");
+            None
+        }
+    };
+
     let bind_addr = config.bind_addr;
-    let state = AppState::new(config, pool);
+    let state = AppState::new(config, pool).with_search(search);
     let app = routes::build_router(state);
 
     // 4) Écoute sur un port non privilégié, derrière un reverse proxy TLS.

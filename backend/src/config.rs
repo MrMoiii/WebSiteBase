@@ -68,6 +68,161 @@ pub struct Config {
     pub login_lockout: Duration,
 
     pub log_filter: String,
+
+    /// Configuration du moteur de recherche secondaire (OpenSearch).
+    ///
+    /// `None` = recherche désactivée : l'endpoint `/search` répond alors 503
+    /// proprement. La fonctionnalité est ainsi *opt-in* et n'impacte pas le
+    /// reste de l'application si le cluster n'est pas provisionné.
+    pub search: Option<SearchConfig>,
+}
+
+/// Mode d'authentification du backend AUPRÈS d'OpenSearch.
+///
+/// Aucun de ces secrets n'atteint jamais le frontend (exigence : le client ne
+/// stocke aucun credential OpenSearch). Ils restent côté serveur.
+#[derive(Clone)]
+pub enum SearchAuth {
+    /// HTTP Basic (`user` + mot de passe). Le mot de passe est un [`Secret`].
+    Basic { username: String, password: Secret },
+    /// En-tête `Authorization: ApiKey <base64>` (clé d'API OpenSearch).
+    ApiKey(Secret),
+}
+
+impl fmt::Debug for SearchAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Ne jamais divulguer le secret, même via Debug.
+        match self {
+            SearchAuth::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"***redacted***")
+                .finish(),
+            SearchAuth::ApiKey(_) => f.write_str("ApiKey(***redacted***)"),
+        }
+    }
+}
+
+/// Configuration validée du sous-système de recherche.
+#[derive(Debug, Clone)]
+pub struct SearchConfig {
+    /// URL de base du cluster (DOIT être en `https://` : TLS obligatoire).
+    pub base_url: String,
+    /// Authentification backend ↔ OpenSearch.
+    pub auth: SearchAuth,
+    /// Certificat CA (PEM) de confiance pour un cluster à CA privée (mTLS/TLS
+    /// interne). Si absent, on s'appuie sur le magasin de racines système.
+    pub ca_cert_path: Option<String>,
+    /// Identité client (PEM concaténé cert+clé) pour le mTLS. Optionnelle.
+    pub client_identity_path: Option<String>,
+    /// Préfixe/alias logique des index métier (ex. `documents`).
+    pub index_prefix: String,
+    /// Active l'isolation par index dédié et le filtre tenant systématique.
+    pub multi_tenant: bool,
+    /// Timeout des appels sortants vers OpenSearch.
+    pub request_timeout: Duration,
+    /// Longueur maximale (en caractères) de la requête plein-texte `q`.
+    pub max_query_chars: usize,
+    /// Taille de page maximale autorisée.
+    pub max_page_size: i64,
+    /// Fenêtre de résultats maximale (`from + size`) — borne la pagination
+    /// profonde (anti-DoS, aligné sur `index.max_result_window`).
+    pub max_result_window: i64,
+    /// Nombre maximal de filtres acceptés dans une requête (borne la profondeur).
+    pub max_filters: usize,
+}
+
+impl SearchConfig {
+    /// Construit la config de recherche depuis l'environnement.
+    ///
+    /// Désactivée (`Ok(None)`) si `OPENSEARCH_URL` est absent. Si présente,
+    /// l'URL DOIT être en HTTPS et une méthode d'auth doit être fournie, sinon
+    /// le démarrage échoue (fail-fast : jamais de recherche non sécurisée).
+    pub fn from_env() -> Result<Option<Self>, ConfigError> {
+        let base_url = match std::env::var("OPENSEARCH_URL") {
+            Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+            _ => return Ok(None),
+        };
+
+        // TLS obligatoire : on refuse explicitement tout endpoint en clair.
+        if !base_url.starts_with("https://") {
+            return Err(ConfigError::Invalid {
+                name: "OPENSEARCH_URL",
+                reason: "doit utiliser https:// (TLS obligatoire)".to_string(),
+            });
+        }
+        let base_url = base_url.trim_end_matches('/').to_string();
+
+        // Auth : ApiKey prioritaire si fournie, sinon Basic (user + password).
+        let auth = if let Ok(key) = std::env::var("OPENSEARCH_API_KEY") {
+            if key.trim().is_empty() {
+                return Err(ConfigError::Invalid {
+                    name: "OPENSEARCH_API_KEY",
+                    reason: "valeur vide".to_string(),
+                });
+            }
+            SearchAuth::ApiKey(Secret(key))
+        } else {
+            let username = require("OPENSEARCH_USERNAME")?;
+            let password = Secret(require("OPENSEARCH_PASSWORD")?);
+            SearchAuth::Basic { username, password }
+        };
+
+        let ca_cert_path = opt_string("OPENSEARCH_CA_CERT_PATH");
+        let client_identity_path = opt_string("OPENSEARCH_CLIENT_IDENTITY_PATH");
+
+        let index_prefix = std::env::var("OPENSEARCH_INDEX_PREFIX")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "documents".to_string());
+        // Le préfixe sert à nommer des index : on le contraint strictement.
+        if !is_valid_index_token(&index_prefix) {
+            return Err(ConfigError::Invalid {
+                name: "OPENSEARCH_INDEX_PREFIX",
+                reason: "caractères autorisés : [a-z0-9_-], 1..=64".to_string(),
+            });
+        }
+
+        let multi_tenant = opt_parse::<bool>("OPENSEARCH_MULTI_TENANT", false)?;
+        let request_timeout =
+            Duration::from_secs(opt_parse::<u64>("OPENSEARCH_TIMEOUT_SECONDS", 5)?);
+        let max_query_chars = opt_parse::<usize>("OPENSEARCH_MAX_QUERY_CHARS", 256)?;
+        let max_page_size = opt_parse::<i64>("OPENSEARCH_MAX_PAGE_SIZE", 50)?;
+        let max_result_window = opt_parse::<i64>("OPENSEARCH_MAX_RESULT_WINDOW", 10_000)?;
+        let max_filters = opt_parse::<usize>("OPENSEARCH_MAX_FILTERS", 8)?;
+
+        Ok(Some(SearchConfig {
+            base_url,
+            auth,
+            ca_cert_path,
+            client_identity_path,
+            index_prefix,
+            multi_tenant,
+            request_timeout,
+            max_query_chars,
+            max_page_size,
+            max_result_window,
+            max_filters,
+        }))
+    }
+}
+
+/// Valide un jeton d'index OpenSearch : minuscules, chiffres, `_` et `-`,
+/// longueur 1..=64. Le premier caractère DOIT être alphanumérique : OpenSearch
+/// interdit les noms d'index commençant par `_`, `-` ou `+` (collision avec les
+/// index/API internes). Empêche l'injection de caractères spéciaux dans un nom
+/// d'index dérivé de la configuration ou d'un tenant.
+pub fn is_valid_index_token(s: &str) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    let mut bytes = s.bytes();
+    let first = bytes.next().expect("non-empty checked above");
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
+    }
+    bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 impl Config {
@@ -116,6 +271,8 @@ impl Config {
 
         let log_filter = std::env::var("LOG_FILTER").unwrap_or_else(|_| "info".to_string());
 
+        let search = SearchConfig::from_env()?;
+
         Ok(Self {
             bind_addr,
             trusted_proxy_hops,
@@ -132,6 +289,7 @@ impl Config {
             login_max_failed_attempts,
             login_lockout,
             log_filter,
+            search,
         })
     }
 }
@@ -157,6 +315,8 @@ impl Config {
             login_max_failed_attempts: 5,
             login_lockout: Duration::from_secs(900),
             log_filter: "warn".to_string(),
+            // Recherche désactivée par défaut en test : `/search` répond 503.
+            search: None,
         }
     }
 }
@@ -167,6 +327,14 @@ fn require(name: &'static str) -> Result<String, ConfigError> {
         Ok(v) if !v.trim().is_empty() => Ok(v),
         _ => Err(ConfigError::Missing(name)),
     }
+}
+
+/// Récupère une variable optionnelle non vide (chaîne brute), ou `None`.
+fn opt_string(name: &'static str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Récupère et parse une variable obligatoire.

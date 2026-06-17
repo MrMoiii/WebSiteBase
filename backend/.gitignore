@@ -6,5 +6,8 @@
 .env.*
 !.env.example
 
+# Certificats OpenSearch générés localement (PKI de dev) : JAMAIS committés.
+/docker/opensearch/certs/
+
 # Divers
 *.log
