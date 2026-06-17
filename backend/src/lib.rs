@@ -13,8 +13,8 @@ pub mod errors;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
+pub mod monitoring;
 pub mod routes;
-pub mod search;
 pub mod state;
 pub mod telemetry;
 
@@ -51,24 +51,36 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // applicatif n'a pas de droits DDL). Elles sont jouées séparément avec le
     // rôle propriétaire (cf. README).
 
-    // 3bis) Service de recherche secondaire (OpenSearch), optionnel. Construit
-    // une seule fois ici (charge les certificats, monte le client TLS). Si la
-    // config est absente, la recherche est désactivée proprement.
-    let search = match &config.search {
-        Some(search_cfg) => {
-            let svc = search::SearchService::from_config(search_cfg)
-                .context("initialisation du service de recherche (OpenSearch)")?;
-            tracing::info!("service de recherche OpenSearch initialisé");
-            Some(std::sync::Arc::new(svc))
+    // 3bis) Monitoring d'API via OpenSearch (optionnel). Construit le client TLS
+    // (charge les certificats), provisionne l'index template, puis démarre la
+    // tâche de fond d'envoi. Si la config est absente, le monitoring est
+    // simplement désactivé (aucun envoi, aucun impact).
+    let monitoring = match &config.monitoring {
+        Some(mon_cfg) => {
+            let client = monitoring::OpenSearchClient::from_config(mon_cfg)
+                .context("initialisation du client OpenSearch (monitoring)")?;
+            // Provisionne le mapping strict des index de logs (idempotent). Un
+            // échec ici n'est pas fatal : on logge et on continue (best-effort).
+            if let Err(err) = client
+                .ensure_index_template(
+                    monitoring::event::TEMPLATE_NAME,
+                    &monitoring::event::index_template(&mon_cfg.index_prefix),
+                )
+                .await
+            {
+                tracing::warn!(error.detail = %err, "échec de création de l'index template de monitoring");
+            }
+            tracing::info!("monitoring OpenSearch initialisé");
+            Some(monitoring::spawn(client, mon_cfg.clone()))
         }
         None => {
-            tracing::info!("recherche désactivée (OPENSEARCH_URL absent)");
+            tracing::info!("monitoring désactivé (OPENSEARCH_URL absent)");
             None
         }
     };
 
     let bind_addr = config.bind_addr;
-    let state = AppState::new(config, pool).with_search(search);
+    let state = AppState::new(config, pool).with_monitoring(monitoring);
     let app = routes::build_router(state);
 
     // 4) Écoute sur un port non privilégié, derrière un reverse proxy TLS.

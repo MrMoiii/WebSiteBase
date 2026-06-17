@@ -4,7 +4,6 @@ import {
   authResponseSchema,
   paginatedUsersSchema,
   refreshTokenFromSetCookie,
-  searchResultsSchema,
   userProfileSchema,
 } from "@/lib/api-schemas";
 
@@ -59,41 +58,6 @@ describe("schémas de réponse API", () => {
       paginatedUsersSchema.safeParse({ ...ok, page_size: 1000 }).success,
     ).toBe(false);
     expect(paginatedUsersSchema.safeParse({ ...ok, total: -1 }).success).toBe(false);
-  });
-});
-
-describe("schéma de résultats de recherche", () => {
-  const HIT = {
-    id: "doc-1",
-    score: 1.5,
-    title: "Bonjour",
-    tags: ["news", "fr"],
-    created_at: 1_700_000_000,
-  };
-
-  it("accepte une enveloppe de recherche conforme (user)", () => {
-    const ok = { items: [HIT], total: 1, page: 1, page_size: 10 };
-    expect(searchResultsSchema.safeParse(ok).success).toBe(true);
-  });
-
-  it("accepte un score null et un hit admin avec body", () => {
-    const ok = {
-      items: [{ ...HIT, score: null, body: "contenu" }],
-      total: 1,
-      page: 1,
-      page_size: 10,
-    };
-    expect(searchResultsSchema.safeParse(ok).success).toBe(true);
-  });
-
-  it("rejette un total négatif ou une page nulle", () => {
-    const base = { items: [], total: 0, page: 1, page_size: 10 };
-    expect(searchResultsSchema.safeParse({ ...base, total: -1 }).success).toBe(
-      false,
-    );
-    expect(searchResultsSchema.safeParse({ ...base, page: 0 }).success).toBe(
-      false,
-    );
   });
 });
 

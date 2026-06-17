@@ -24,7 +24,7 @@ import type { SessionData } from "@/lib/session";
  */
 
 /** Chemins exigeant une session. Doit rester cohérent avec les layouts. */
-const PROTECTED_PREFIXES = ["/profile", "/admin", "/search"] as const;
+const PROTECTED_PREFIXES = ["/profile", "/admin"] as const;
 
 /**
  * Noms possibles du cookie de session (cf. lib/session.ts) : le préfixe

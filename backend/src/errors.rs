@@ -48,15 +48,17 @@ pub enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
-    /// Dépendance en aval indisponible (ex. moteur de recherche désactivé ou
-    /// injoignable). Le détail est loggé, jamais renvoyé.
-    #[error("service unavailable: {0}")]
-    ServiceUnavailable(String),
-
     /// Erreur interne. Le détail (`String`) est loggé, jamais renvoyé.
     #[error("internal error: {0}")]
     Internal(String),
 }
+
+/// Code d'erreur applicatif stable, attaché aux réponses d'erreur en extension.
+///
+/// Permet à des couches en aval (ex. middleware de monitoring) de connaître le
+/// code sans re-parser le corps JSON. Sûr à indexer (pas de donnée sensible).
+#[derive(Debug, Clone, Copy)]
+pub struct ErrorCode(pub &'static str);
 
 impl ApiError {
     /// Status HTTP associé.
@@ -70,7 +72,6 @@ impl ApiError {
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -86,7 +87,6 @@ impl ApiError {
             ApiError::TooManyRequests => "too_many_requests",
             ApiError::PayloadTooLarge => "payload_too_large",
             ApiError::BadRequest(_) => "bad_request",
-            ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Internal(_) => "internal_error",
         }
     }
@@ -102,9 +102,6 @@ impl ApiError {
             ApiError::TooManyRequests => "Too many requests. Please retry later.".to_string(),
             ApiError::PayloadTooLarge => "Request body too large.".to_string(),
             ApiError::BadRequest(m) => m.clone(),
-            ApiError::ServiceUnavailable(_) => {
-                "Service temporarily unavailable. Please retry later.".to_string()
-            }
             // Aucune fuite : message générique côté client.
             ApiError::Internal(_) => "An internal error occurred.".to_string(),
         }
@@ -131,12 +128,12 @@ impl IntoResponse for ApiError {
         // requête courante (donc avec le correlation id / request id). Les 5xx
         // sont des erreurs, les 401/403/429 sont des événements SOC en warn.
         match &self {
-            ApiError::Internal(detail) | ApiError::ServiceUnavailable(detail) => {
+            ApiError::Internal(detail) => {
                 tracing::error!(
                     error.kind = self.code(),
                     error.detail = %detail,
                     http.status = status.as_u16(),
-                    "requête échouée (erreur interne / dépendance indisponible)"
+                    "requête échouée (erreur interne)"
                 );
             }
             ApiError::Unauthorized | ApiError::Forbidden | ApiError::TooManyRequests => {
@@ -157,14 +154,18 @@ impl IntoResponse for ApiError {
             }
         }
 
+        let code = self.code();
         let body = ErrorBody {
             error: ErrorDetail {
-                code: self.code(),
+                code,
                 message: self.public_message(),
             },
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        // Expose le code aux couches en aval (monitoring) sans re-parser le corps.
+        response.extensions_mut().insert(ErrorCode(code));
+        response
     }
 }
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::config::Config;
-use crate::search::SearchService;
+use crate::monitoring::MonitoringHandle;
 
 /// État cloné à chaque requête. `PgPool` est un `Arc` interne (clone bon marché)
 /// et `Config` est encapsulée dans un `Arc` pour partager la config immuable.
@@ -14,10 +14,9 @@ use crate::search::SearchService;
 pub struct AppState {
     pub config: Arc<Config>,
     pub pool: PgPool,
-    /// Service de recherche secondaire. `None` si OpenSearch n'est pas
-    /// configuré : l'endpoint `/search` répond alors 503. `Arc` car
-    /// `SearchService` détient un client HTTP réutilisable.
-    pub search: Option<Arc<SearchService>>,
+    /// Poignée de monitoring (clone léger : un `Sender` mpsc). `None` si le
+    /// monitoring OpenSearch n'est pas configuré.
+    pub monitoring: Option<MonitoringHandle>,
 }
 
 impl AppState {
@@ -25,13 +24,13 @@ impl AppState {
         Self {
             config: Arc::new(config),
             pool,
-            search: None,
+            monitoring: None,
         }
     }
 
-    /// Attache (ou non) un service de recherche. Chaînable depuis le bootstrap.
-    pub fn with_search(mut self, search: Option<Arc<SearchService>>) -> Self {
-        self.search = search;
+    /// Attache (ou non) une poignée de monitoring. Chaînable depuis le bootstrap.
+    pub fn with_monitoring(mut self, monitoring: Option<MonitoringHandle>) -> Self {
+        self.monitoring = monitoring;
         self
     }
 }

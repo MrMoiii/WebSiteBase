@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 # --- Runtime asynchrone ---
-tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
 
 # --- Framework HTTP ---
 axum = { version = "0.8.1", features = ["macros", "json", "query"] }

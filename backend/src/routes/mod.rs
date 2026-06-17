@@ -19,8 +19,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{admin, auth, health, search, users};
+use crate::handlers::{admin, auth, health, users};
 use crate::middleware::security_headers::SECURITY_HEADERS;
+use crate::monitoring::layer::record_requests;
 use crate::state::AppState;
 
 /// En-tête portant le correlation id propagé dans les logs et les réponses.
@@ -29,6 +30,9 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Assemble le routeur complet à partir de l'état applicatif.
 pub fn build_router(state: AppState) -> Router {
     let config = state.config.clone();
+    // Clone destiné au middleware de monitoring (l'original est consommé par
+    // `with_state`). Clone bon marché : Arc<Config> + Sender mpsc + PgPool.
+    let state_for_monitoring = state.clone();
 
     // --- Rate limiting des endpoints sensibles (login/register) -------------
     // Clé = IP cliente (via XFF/X-Real-IP si proxy de confiance). Quota :
@@ -54,29 +58,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/logout", post(auth::logout))
         .layer(rate_limit);
 
-    // --- Rate limiting renforcé de /search (anti-scraping) ------------------
-    // Quota plus strict que les routes courantes : rafale de 15, 1 jeton/s. Une
-    // recherche est plus coûteuse et une rafale élevée trahit un scraping.
-    let search_governor = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(15)
-            .key_extractor(SmartIpKeyExtractor)
-            .finish()
-            .expect("configuration governor (search) valide"),
-    );
-    let search_routes = Router::new()
-        .route("/search", get(search::search))
-        .layer(GovernorLayer {
-            config: search_governor,
-        });
-
     // Routes métier (l'autorisation est imposée par les extracteurs des handlers).
     let api_routes = Router::new()
         .nest("/auth", auth_routes)
         .route("/users/me", get(users::get_me).patch(users::update_me))
-        .route("/admin/users", get(admin::list_users))
-        .merge(search_routes);
+        .route("/admin/users", get(admin::list_users));
 
     let mut app = Router::new()
         .route("/health", get(health::liveness))
@@ -107,6 +93,14 @@ pub fn build_router(state: AppState) -> Router {
             .layer(SetRequestIdLayer::new(
                 header::HeaderName::from_static(REQUEST_ID_HEADER),
                 MakeRequestUuid,
+            ))
+            // 2bis. Monitoring : capture l'issue de chaque requête (succès/erreur)
+            //       et l'envoie à OpenSearch (non bloquant). Placé ici pour voir
+            //       le correlation id (posé ci-dessus) ET les statuts générés par
+            //       les couches métier en aval (timeout 408, limite 413, 500…).
+            .layer(axum::middleware::from_fn_with_state(
+                state_for_monitoring,
+                record_requests,
             ))
             // 3. Trace chaque requête dans un span incluant le correlation id.
             .layer(

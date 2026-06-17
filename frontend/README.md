@@ -36,7 +36,6 @@ frontend/
 │   ├── (app)/                  # périmètre AUTHENTIFIÉ
 │   │   ├── layout.tsx          # vérification de session (serveur)
 │   │   ├── profile/page.tsx    # profil (lecture/édition)
-│   │   ├── search/page.tsx     # recherche (debounce client, pagination) via le BFF
 │   │   └── admin/
 │   │       ├── layout.tsx      # rôle admin exigé (404 générique sinon)
 │   │       └── users/page.tsx  # listing utilisateurs paginé

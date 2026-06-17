@@ -7,11 +7,9 @@ import {
   authResponseSchema,
   paginatedUsersSchema,
   refreshTokenFromSetCookie,
-  searchResultsSchema,
   userProfileSchema,
   type ApiAuthResponse,
   type ApiPaginatedUsers,
-  type ApiSearchResults,
   type ApiUserProfile,
 } from "./api-schemas";
 import { env } from "./env";
@@ -275,47 +273,6 @@ export async function apiUpdateMe(
     throw await toApiError(res, requestId, path);
   }
   return parseBody(res, userProfileSchema, requestId, path);
-}
-
-/** Paramètres de recherche acceptés par le BFF (déjà validés en amont). */
-export interface SearchQuery {
-  q: string;
-  page: number;
-  pageSize: number;
-  sort?: "created_at" | "title.raw" | "_score";
-  order?: "asc" | "desc";
-  /** Tags séparés par des virgules (filtre exact côté backend). */
-  tags?: string;
-}
-
-/**
- * Recherche via le backend (seule porte vers OpenSearch — le navigateur n'a
- * jamais ni l'URL ni les credentials du cluster). Tous les paramètres sont
- * encodés par URLSearchParams : aucune concaténation de chaîne client, et le
- * backend revalide + interdit le DSL brut.
- */
-export async function apiSearch(
-  accessToken: string,
-  query: SearchQuery,
-  requestId: string,
-): Promise<ApiSearchResults> {
-  const params = new URLSearchParams({
-    q: query.q,
-    page: String(query.page),
-    page_size: String(query.pageSize),
-  });
-  if (query.sort !== undefined) params.set("sort", query.sort);
-  if (query.order !== undefined) params.set("order", query.order);
-  if (query.tags !== undefined && query.tags.length > 0) {
-    params.set("tags", query.tags);
-  }
-
-  const path = `/api/v1/search?${params.toString()}`;
-  const res = await apiFetch(path, { accessToken, requestId });
-  if (!res.ok) {
-    throw await toApiError(res, requestId, path);
-  }
-  return parseBody(res, searchResultsSchema, requestId, path);
 }
 
 export async function apiListUsers(

@@ -42,34 +42,6 @@ export const paginatedUsersSchema = z.object({
 
 export type ApiPaginatedUsers = z.infer<typeof paginatedUsersSchema>;
 
-/**
- * Un résultat de recherche tel que sérialisé par le backend : `id` + `score`
- * puis les champs `_source` CONSULTABLES (aplatis). Les champs varient selon le
- * rôle (un admin voit `body`), donc ils sont optionnels. Tout champ inattendu
- * est ignoré (`.strip()` par défaut) : le backend a déjà restreint la sortie.
- */
-export const searchHitSchema = z.object({
-  id: z.string().max(512),
-  score: z.number().nullable(),
-  title: z.string().max(1024).optional(),
-  tags: z.array(z.string().max(256)).max(64).optional(),
-  // `created_at` est un timestamp Unix (secondes) renvoyé par le backend.
-  created_at: z.number().int().optional(),
-  body: z.string().optional(),
-});
-
-export type ApiSearchHit = z.infer<typeof searchHitSchema>;
-
-/** Enveloppe paginée de GET /search. */
-export const searchResultsSchema = z.object({
-  items: z.array(searchHitSchema),
-  total: z.number().int().min(0),
-  page: z.number().int().min(1),
-  page_size: z.number().int().min(1),
-});
-
-export type ApiSearchResults = z.infer<typeof searchResultsSchema>;
-
 /** Format d'erreur générique du backend : {"error":{"code","message"}}. */
 export const apiErrorBodySchema = z.object({
   error: z.object({

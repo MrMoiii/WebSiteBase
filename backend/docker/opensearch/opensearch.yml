@@ -1,5 +1,5 @@
 # =============================================================================
-# Configuration OpenSearch durcie (overlay docker-compose.search.yml).
+# Configuration OpenSearch durcie (overlay docker-compose.observability.yml).
 #
 # - Plugin de sécurité ACTIVÉ, config de démo DÉSACTIVÉE (certs/users réels).
 # - TLS sur la couche transport ET la couche REST (HTTP) : chiffrement en
@@ -7,7 +7,7 @@
 # - Le nœud n'est joignable que sur le réseau Docker interne (pas de port publié).
 #
 # NB : la config des UTILISATEURS/RÔLES (internal_users.yml, roles.yml…) est
-# appliquée par securityadmin.sh au premier démarrage — voir SEARCH.md. Ce
+# appliquée par securityadmin.sh au premier démarrage — voir MONITORING.md. Ce
 # fichier ne couvre que la couche TLS et l'identité du nœud.
 # =============================================================================
 

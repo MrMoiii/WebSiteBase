@@ -1,18 +1,19 @@
 # =============================================================================
-# Overlay : OpenSearch SÉCURISÉ (TLS + plugin security) pour le développement.
+# Overlay : monitoring d'API via OpenSearch + OpenSearch Dashboards (le panneau).
 #
 # Usage :
-#   ./docker/opensearch/generate-certs.sh           # PKI locale (non committée)
-#   docker compose -f docker-compose.yml -f docker-compose.search.yml up -d --build
+#   ./docker/opensearch/generate-certs.sh   # PKI locale (non committée)
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
 #
-# Sécurité :
-#  - le cluster n'expose AUCUN port sur l'hôte (`ports:` absent) : il n'est
-#    joignable que sur le réseau Docker interne, exclusivement par l'API ;
-#  - TLS activé sur la couche REST (le backend s'y connecte en https://) ;
-#  - config de démo désactivée ; certificats et opensearch.yml montés en RO.
+# - OpenSearch : reçoit les logs d'API (succès/erreurs) envoyés par le backend.
+#   Plugin de sécurité activé, TLS sur la couche REST (le backend s'y connecte
+#   en https://). NON exposé sur l'hôte : joignable seulement par le backend et
+#   les Dashboards via le réseau Docker interne.
+# - OpenSearch Dashboards : le PANNEAU de visualisation/debug, exposé sur
+#   http://localhost:5601 (réseau de l'opérateur). Se connecte au cluster en TLS.
 #
-# En PRODUCTION : cluster dédié managé, PKI gérée, secrets via le gestionnaire
-# de secrets de l'orchestrateur — jamais ce compose tel quel.
+# En PRODUCTION : cluster managé sécurisé, PKI gérée, secrets via le
+# gestionnaire de secrets de l'orchestrateur — jamais ce compose tel quel.
 # =============================================================================
 
 services:
@@ -35,12 +36,24 @@ services:
       - ./docker/opensearch/certs:/usr/share/opensearch/config/certs:ro
     # Pas de `ports:` : jamais exposé hors du réseau Docker interne.
     healthcheck:
-      # -k : la CA locale n'est pas dans le magasin du conteneur ; on vérifie
-      # seulement que le endpoint TLS répond (le backend, lui, valide la CA).
       test: ["CMD-SHELL", "curl -sk https://localhost:9200 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
+    security_opt:
+      - "no-new-privileges:true"
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.0
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    # Le panneau de debug, exposé à l'opérateur uniquement (poste/VPN).
+    ports:
+      - "127.0.0.1:5601:5601"
+    volumes:
+      - ./docker/opensearch/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./docker/opensearch/certs:/usr/share/opensearch-dashboards/config/certs:ro
     security_opt:
       - "no-new-privileges:true"
 
@@ -51,18 +64,17 @@ services:
       opensearch:
         condition: service_healthy
     environment:
-      # Active la recherche dans l'API (cf. config.rs / SEARCH.md).
+      # Active le monitoring dans l'API (cf. config.rs / MONITORING.md).
       OPENSEARCH_URL: "https://opensearch:9200"
       OPENSEARCH_USERNAME: "admin"
       OPENSEARCH_PASSWORD: "Dev_Strong_Passw0rd!"
       OPENSEARCH_CA_CERT_PATH: "/etc/opensearch-certs/ca.pem"
       # mTLS (optionnel) : décommenter pour l'authentification mutuelle.
       # OPENSEARCH_CLIENT_IDENTITY_PATH: "/etc/opensearch-certs/client-identity.pem"
-      OPENSEARCH_INDEX_PREFIX: "documents"
-      OPENSEARCH_MULTI_TENANT: "false"
+      OPENSEARCH_INDEX_PREFIX: "api-logs"
     volumes:
-      # La CA locale est montée en lecture seule pour valider le certificat TLS
-      # du cluster (pas de désactivation de la vérification).
+      # CA locale montée en lecture seule pour valider le certificat TLS du
+      # cluster (jamais de désactivation de la vérification).
       - ./docker/opensearch/certs:/etc/opensearch-certs:ro
 
 volumes:

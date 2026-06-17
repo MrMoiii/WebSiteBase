@@ -55,22 +55,6 @@ export const profileSchema = z.object({
 export type ProfileInput = z.infer<typeof profileSchema>;
 
 /**
- * Requête de recherche. La validation serveur (DTO `garde` du backend) reste
- * l'autorité ; ce schéma offre un retour immédiat côté client et borne
- * l'entrée AVANT tout appel. Bornes alignées sur le backend
- * (`OPENSEARCH_MAX_QUERY_CHARS`, défaut 256).
- */
-export const searchSchema = z.object({
-  q: z
-    .string()
-    .trim()
-    .min(1, { error: "Saisissez au moins un caractère." })
-    .max(256, { error: "La recherche ne peut pas dépasser 256 caractères." }),
-});
-
-export type SearchInput = z.infer<typeof searchSchema>;
-
-/**
  * Anti-spam basique des formulaires publics (exigence #7) : champ honeypot
  * invisible pour un humain ; s'il est rempli, c'est un bot. Le backend
  * applique en plus un rate limiting par IP sur /auth/*.

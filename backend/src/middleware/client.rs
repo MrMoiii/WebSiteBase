@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap};
 
 use crate::state::AppState;
 
@@ -33,17 +34,27 @@ impl FromRequestParts<AppState> for ClientContext {
             // Borne la longueur loggée pour éviter le log d'un UA géant.
             .map(|s| s.chars().take(256).collect::<String>());
 
-        let ip = client_ip(parts, state.config.trusted_proxy_hops);
+        let ip = resolve_client_ip(
+            &parts.headers,
+            &parts.extensions,
+            state.config.trusted_proxy_hops,
+        );
 
         Ok(ClientContext { ip, user_agent })
     }
 }
 
 /// Détermine l'IP cliente en respectant la chaîne de proxys de confiance.
-fn client_ip(parts: &Parts, trusted_hops: usize) -> Option<String> {
+///
+/// Exposé pour être réutilisé hors d'un extracteur (ex. middleware de
+/// monitoring) qui ne dispose pas de `Parts` mais des en-têtes + extensions.
+pub fn resolve_client_ip(
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    trusted_hops: usize,
+) -> Option<String> {
     // IP de la connexion TCP directe (le premier proxy, en principe).
-    let peer = parts
-        .extensions
+    let peer = extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip().to_string());
 
@@ -52,11 +63,7 @@ fn client_ip(parts: &Parts, trusted_hops: usize) -> Option<String> {
         return peer;
     }
 
-    if let Some(xff) = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let chain: Vec<&str> = xff
             .split(',')
             .map(|s| s.trim())
