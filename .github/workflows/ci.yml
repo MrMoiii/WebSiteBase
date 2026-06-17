@@ -1,15 +1,12 @@
 name: backend-ci
 
-# La CI ne tourne que sur les changements du backend.
+# La CI backend tourne sur TOUT push et toute pull request, quelle que soit la
+# branche ou les chemins modifiés (le code backend est toujours présent dans le
+# dépôt et le cache .sqlx permet un build hors-ligne, donc la CI est exécutable
+# même pour un push qui ne touche que le frontend).
 on:
   push:
-    branches: [backend, main]
-    paths:
-      - "backend/**"
-      - ".github/workflows/ci.yml"
   pull_request:
-    paths:
-      - "backend/**"
 
 # Annule les exécutions précédentes obsolètes sur la même ref.
 concurrency:
