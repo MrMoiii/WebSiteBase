@@ -9,7 +9,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceBuilder;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
@@ -20,6 +19,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers::{admin, auth, health, users};
+use crate::middleware::client::RateLimitKeyExtractor;
 use crate::middleware::security_headers::SECURITY_HEADERS;
 use crate::state::AppState;
 
@@ -31,13 +31,16 @@ pub fn build_router(state: AppState) -> Router {
     let config = state.config.clone();
 
     // --- Rate limiting des endpoints sensibles (login/register) -------------
-    // Clé = IP cliente (via XFF/X-Real-IP si proxy de confiance). Quota :
+    // Clé = IP cliente de CONFIANCE (cf. RateLimitKeyExtractor), déterminée en
+    // respectant `trusted_proxy_hops` : on N'utilise PAS `SmartIpKeyExtractor`,
+    // qui retient l'IP la plus à gauche de X-Forwarded-For — valeur usurpable
+    // permettant de contourner le quota en faisant tourner l'en-tête. Quota :
     // rafale de 10 requêtes, réapprovisionnée d'1 jeton toutes les 2 secondes.
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(10)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(RateLimitKeyExtractor::new(config.trusted_proxy_hops))
             .finish()
             .expect("configuration governor valide"),
     );
