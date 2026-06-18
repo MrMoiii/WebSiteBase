@@ -8,9 +8,10 @@
 # ---- Stage 1 : build ----
 FROM rust:1-slim-bookworm AS builder
 
-# Dépendances de build : compilateur C pour `ring` (TLS rustls) et certificats.
+# Dépendances de build : compilateur C pour `ring` (TLS rustls) et `cmake` + C
+# pour `aws-lc-sys` (backend cryptographique de `jsonwebtoken`), + certificats.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config \
+    && apt-get install -y --no-install-recommends build-essential pkg-config cmake \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
