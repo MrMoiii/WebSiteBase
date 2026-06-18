@@ -161,7 +161,23 @@ pub async fn refresh(
     }
 
     // Rotation : révoquer l'ancien token avant d'en émettre un nouveau.
-    db::revoke_refresh_token(&state.pool, &token_hash).await?;
+    //
+    // La révocation est ATOMIQUE (`UPDATE ... WHERE revoked_at IS NULL`) et
+    // retourne le nombre de lignes affectées. On EXIGE qu'il vaille 1 : si deux
+    // requêtes concurrentes présentent le même token (race TOCTOU) ou si le
+    // token a déjà été tourné, une seule gagne la révocation ; les autres
+    // obtiennent 0 et sont rejetées. Sans ce contrôle, un même refresh token
+    // pourrait engendrer plusieurs sessions valides (rejeu).
+    let revoked = db::revoke_refresh_token(&state.pool, &token_hash).await?;
+    if revoked == 0 {
+        tracing::warn!(
+            security.event = true,
+            event = "refresh_token_reuse",
+            user.id = %row.user_id,
+            "refresh token déjà tourné (race concurrente ou rejeu) — rotation refusée"
+        );
+        return Err(ApiError::Unauthorized);
+    }
 
     let user = db::find_user_by_id(&state.pool, row.user_id)
         .await?
