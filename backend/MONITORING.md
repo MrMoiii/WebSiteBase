@@ -129,13 +129,26 @@ Overlay fourni : [`docker-compose.observability.yml`](./docker-compose.observabi
 ```bash
 cd backend
 # 1) PKI locale (CA + cert nœud/admin/client) — non committée.
+#    Linux/macOS (openssl requis) :
 ./docker/opensearch/generate-certs.sh
+#    Windows (PowerShell, AUCUN openssl requis — openssl tourne dans Docker) :
+#    .\docker\opensearch\generate-certs.ps1
 # 2) Stack complète : API + PostgreSQL + OpenSearch (TLS) + Dashboards.
 docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
 # 3) Générer du trafic puis ouvrir le panneau.
 curl -s http://localhost:8080/health >/dev/null
 #    Dashboards : http://localhost:5601  (admin / Dev_Strong_Passw0rd!)
 ```
+
+> **Format des clés** : les scripts génèrent des clés **PKCS#8**
+> (`BEGIN PRIVATE KEY`) via `openssl genpkey`. Le plugin de sécurité
+> d'OpenSearch **n'accepte pas** le PKCS#1 (`BEGIN RSA PRIVATE KEY`) — une clé
+> PKCS#1 fait échouer le démarrage du nœud (`exit 1`).
+>
+> **Linux** : si le conteneur `opensearch` sort en erreur avec
+> `vm.max_map_count [65530] is too low`, exécuter
+> `sudo sysctl -w vm.max_map_count=262144` (Docker Desktop :
+> `wsl -d docker-desktop sysctl -w vm.max_map_count=262144`).
 
 - OpenSearch **n'expose aucun port** sur l'hôte (réseau Docker interne) ; seul
   le backend (et Dashboards) le joignent, en TLS.

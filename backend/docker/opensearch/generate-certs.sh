@@ -22,14 +22,17 @@ cd "$CERT_DIR"
 DAYS=825
 
 echo "==> CA locale"
-openssl genrsa -out ca.key 4096
+# genpkey => clé au format PKCS#8 ("BEGIN PRIVATE KEY"). IMPORTANT : le plugin
+# de sécurité d'OpenSearch n'accepte PAS le PKCS#1 ("BEGIN RSA PRIVATE KEY")
+# produit par `openssl genrsa` (sinon le nœud refuse de démarrer).
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out ca.key
 openssl req -x509 -new -nodes -key ca.key -sha256 -days "$DAYS" \
   -subj "/O=WebSiteBase/CN=websitebase-local-ca" -out ca.pem
 
 # Génère un certificat signé par la CA. $1=nom de base, $2=CN, $3=SAN (optionnel)
 gen_cert() {
   local name="$1" cn="$2" san="${3:-}"
-  openssl genrsa -out "${name}.key" 2048
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${name}.key"
   local ext=""
   if [[ -n "$san" ]]; then
     ext=$(mktemp)
