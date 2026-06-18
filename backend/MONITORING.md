@@ -119,41 +119,51 @@ démarrage (idempotent). `dynamic: "strict"` refuse tout champ non déclaré.
 | `error_code` | keyword | code applicatif stable (si erreur) |
 | `client_ip`, `user_agent` | keyword | métadonnées d'audit (UA borné à 256) |
 
-## 5. Déploiement (Docker + TLS + Dashboards)
+## 5. Déploiement (Docker + Dashboards)
 
-Overlay fourni : [`docker-compose.observability.yml`](./docker-compose.observability.yml)
-+ script de certificats [`docker/opensearch/generate-certs.sh`](./docker/opensearch/generate-certs.sh)
-+ configs durcies [`opensearch.yml`](./docker/opensearch/opensearch.yml) et
-[`opensearch_dashboards.yml`](./docker/opensearch/opensearch_dashboards.yml).
+### Mode DEV simple (recommandé en local)
+
+Overlay [`docker-compose.observability.yml`](./docker-compose.observability.yml) :
+le **plugin de sécurité OpenSearch est désactivé** (HTTP interne, pas d'auth,
+**aucun certificat à générer**). Démarre du premier coup.
 
 ```bash
 cd backend
-# 1) PKI locale (CA + cert nœud/admin/client) — non committée.
-#    Linux/macOS (openssl requis) :
-./docker/opensearch/generate-certs.sh
-#    Windows (PowerShell, AUCUN openssl requis — openssl tourne dans Docker) :
-#    .\docker\opensearch\generate-certs.ps1
-# 2) Stack complète : API + PostgreSQL + OpenSearch (TLS) + Dashboards.
+# Stack complète : API + PostgreSQL + OpenSearch + Dashboards.
 docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
-# 3) Générer du trafic puis ouvrir le panneau.
+# Générer du trafic puis ouvrir le panneau.
 curl -s http://localhost:8080/health >/dev/null
-#    Dashboards : http://localhost:5601  (admin / Dev_Strong_Passw0rd!)
+#   Dashboards : http://localhost:5601   (pas d'identifiants : sécurité désactivée)
 ```
 
-> **Format des clés** : les scripts génèrent des clés **PKCS#8**
-> (`BEGIN PRIVATE KEY`) via `openssl genpkey`. Le plugin de sécurité
-> d'OpenSearch **n'accepte pas** le PKCS#1 (`BEGIN RSA PRIVATE KEY`) — une clé
-> PKCS#1 fait échouer le démarrage du nœud (`exit 1`).
->
-> **Linux** : si le conteneur `opensearch` sort en erreur avec
-> `vm.max_map_count [65530] is too low`, exécuter
-> `sudo sysctl -w vm.max_map_count=262144` (Docker Desktop :
-> `wsl -d docker-desktop sysctl -w vm.max_map_count=262144`).
-
 - OpenSearch **n'expose aucun port** sur l'hôte (réseau Docker interne) ; seul
-  le backend (et Dashboards) le joignent, en TLS.
-- Dashboards est exposé sur `127.0.0.1:5601` (opérateur uniquement).
-- Le backend reçoit les `OPENSEARCH_*` et envoie ses logs automatiquement.
+  le backend et Dashboards le joignent.
+- Dashboards (le panneau) est sur `127.0.0.1:5601` (opérateur uniquement).
+- Le backend pointe sur `http://opensearch:9200` avec `OPENSEARCH_ALLOW_INSECURE=true`
+  (toléré seulement parce que le cluster est sur le réseau interne).
+
+> **Linux/WSL2** : si `opensearch` sort avec `vm.max_map_count [65530] is too low`,
+> exécuter `sudo sysctl -w vm.max_map_count=262144`
+> (Docker Desktop : `wsl -d docker-desktop sysctl -w vm.max_map_count=262144`).
+
+### Variante DURCIE (proche prod : TLS + plugin de sécurité)
+
+Pour un déploiement réaliste, on active TLS et l'authentification. Le backend
+exige alors `https://` (défaut : `OPENSEARCH_ALLOW_INSECURE=false`). Cette
+variante nécessite une PKI et le bootstrap du plugin de sécurité :
+
+- certificats **PKCS#8** (`BEGIN PRIVATE KEY`, via `openssl genpkey` — le PKCS#1
+  fait échouer le nœud) : scripts
+  [`generate-certs.sh`](./docker/opensearch/generate-certs.sh) (Linux/macOS) et
+  [`generate-certs.ps1`](./docker/opensearch/generate-certs.ps1) (Windows, via
+  Docker, sans openssl sur l'hôte) ;
+- configs [`opensearch.yml`](./docker/opensearch/opensearch.yml) /
+  [`opensearch_dashboards.yml`](./docker/opensearch/opensearch_dashboards.yml) ;
+- montage des certs + `OPENSEARCH_URL=https://…`, `OPENSEARCH_CA_CERT_PATH`,
+  identifiants (et `OPENSEARCH_CLIENT_IDENTITY_PATH` pour le mTLS).
+
+> En production, privilégier un **cluster OpenSearch managé** déjà sécurisé
+> plutôt que de bootstrapper le plugin de sécurité à la main.
 
 ## 6. Le panneau Dashboards (debug)
 

@@ -1,19 +1,20 @@
 # =============================================================================
-# Overlay : monitoring d'API via OpenSearch + OpenSearch Dashboards (le panneau).
+# Overlay DEV : monitoring d'API via OpenSearch + OpenSearch Dashboards.
 #
-# Usage :
-#   ./docker/opensearch/generate-certs.sh   # PKI locale (non committée)
+# Usage (aucun certificat requis) :
 #   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
 #
-# - OpenSearch : reçoit les logs d'API (succès/erreurs) envoyés par le backend.
-#   Plugin de sécurité activé, TLS sur la couche REST (le backend s'y connecte
-#   en https://). NON exposé sur l'hôte : joignable seulement par le backend et
-#   les Dashboards via le réseau Docker interne.
-# - OpenSearch Dashboards : le PANNEAU de visualisation/debug, exposé sur
-#   http://localhost:5601 (réseau de l'opérateur). Se connecte au cluster en TLS.
+# Mode DÉVELOPPEMENT SIMPLE : le plugin de sécurité OpenSearch est DÉSACTIVÉ
+# (HTTP, pas d'auth, pas de TLS, pas de certs à générer). C'est volontaire pour
+# un panneau de debug local :
+#   - OpenSearch n'est PAS exposé sur l'hôte (aucun `ports:`) : joignable
+#     uniquement par le backend et Dashboards sur le réseau Docker interne ;
+#   - Dashboards (le panneau) est exposé sur 127.0.0.1:5601 (opérateur seul) ;
+#   - le backend parle au cluster en http:// via OPENSEARCH_ALLOW_INSECURE=true.
 #
-# En PRODUCTION : cluster managé sécurisé, PKI gérée, secrets via le
-# gestionnaire de secrets de l'orchestrateur — jamais ce compose tel quel.
+# ⚠️ En PRODUCTION : cluster managé sécurisé (TLS + auth/mTLS), JAMAIS ce
+# compose. Une variante durcie (TLS + plugin de sécurité) est documentée dans
+# MONITORING.md (fichiers docker/opensearch/opensearch.yml, certs, etc.).
 # =============================================================================
 
 services:
@@ -21,22 +22,18 @@ services:
     image: opensearchproject/opensearch:2.19.0
     environment:
       - discovery.type=single-node
-      # Désactive l'auto-installation de la config de démo (certs/users faibles).
-      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # Désactive entièrement le plugin de sécurité : HTTP simple, pas d'auth.
+      - DISABLE_SECURITY_PLUGIN=true
       - bootstrap.memory_lock=true
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-      # Mot de passe initial de l'admin (dev). En prod : secret managé.
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Dev_Strong_Passw0rd!
     ulimits:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
     volumes:
       - opensearch-data:/usr/share/opensearch/data
-      - ./docker/opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
-      - ./docker/opensearch/certs:/usr/share/opensearch/config/certs:ro
     # Pas de `ports:` : jamais exposé hors du réseau Docker interne.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sk https://localhost:9200 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -48,12 +45,13 @@ services:
     depends_on:
       opensearch:
         condition: service_healthy
-    # Le panneau de debug, exposé à l'opérateur uniquement (poste/VPN).
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      # Désactive le plugin de sécurité côté Dashboards (cohérent avec le cluster).
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    # Le panneau de debug, exposé à l'opérateur uniquement (localhost).
     ports:
       - "127.0.0.1:5601:5601"
-    volumes:
-      - ./docker/opensearch/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
-      - ./docker/opensearch/certs:/usr/share/opensearch-dashboards/config/certs:ro
     security_opt:
       - "no-new-privileges:true"
 
@@ -65,17 +63,14 @@ services:
         condition: service_healthy
     environment:
       # Active le monitoring dans l'API (cf. config.rs / MONITORING.md).
-      OPENSEARCH_URL: "https://opensearch:9200"
-      OPENSEARCH_USERNAME: "admin"
-      OPENSEARCH_PASSWORD: "Dev_Strong_Passw0rd!"
-      OPENSEARCH_CA_CERT_PATH: "/etc/opensearch-certs/ca.pem"
-      # mTLS (optionnel) : décommenter pour l'authentification mutuelle.
-      # OPENSEARCH_CLIENT_IDENTITY_PATH: "/etc/opensearch-certs/client-identity.pem"
+      OPENSEARCH_URL: "http://opensearch:9200"
+      # Autorise le http EN DEV (cluster sur réseau interne non exposé).
+      OPENSEARCH_ALLOW_INSECURE: "true"
+      # Credentials factices : la sécurité est désactivée côté cluster, l'en-tête
+      # d'auth est ignoré. La config backend exige néanmoins une méthode d'auth.
+      OPENSEARCH_USERNAME: "dev"
+      OPENSEARCH_PASSWORD: "dev"
       OPENSEARCH_INDEX_PREFIX: "api-logs"
-    volumes:
-      # CA locale montée en lecture seule pour valider le certificat TLS du
-      # cluster (jamais de désactivation de la vérification).
-      - ./docker/opensearch/certs:/etc/opensearch-certs:ro
 
 volumes:
   opensearch-data:

@@ -140,14 +140,23 @@ impl MonitoringConfig {
             _ => return Ok(None),
         };
 
-        // TLS obligatoire : on refuse explicitement tout endpoint en clair.
-        if !base_url.starts_with("https://") {
+        let base_url = base_url.trim_end_matches('/').to_string();
+
+        // TLS obligatoire par défaut. Le `http://` n'est toléré qu'en DEV
+        // explicite (`OPENSEARCH_ALLOW_INSECURE=true`), pour un cluster sur
+        // réseau interne non exposé. En production, toute URL non-https est
+        // refusée au démarrage (fail-fast).
+        let allow_insecure = opt_parse::<bool>("OPENSEARCH_ALLOW_INSECURE", false)?;
+        let scheme_ok =
+            base_url.starts_with("https://") || (base_url.starts_with("http://") && allow_insecure);
+        if !scheme_ok {
             return Err(ConfigError::Invalid {
                 name: "OPENSEARCH_URL",
-                reason: "doit utiliser https:// (TLS obligatoire)".to_string(),
+                reason: "doit utiliser https:// (TLS obligatoire) ; pour du http \
+                         en dev sur réseau interne, poser OPENSEARCH_ALLOW_INSECURE=true"
+                    .to_string(),
             });
         }
-        let base_url = base_url.trim_end_matches('/').to_string();
 
         // Auth : ApiKey prioritaire si fournie, sinon Basic (user + password).
         let auth = if let Ok(key) = std::env::var("OPENSEARCH_API_KEY") {

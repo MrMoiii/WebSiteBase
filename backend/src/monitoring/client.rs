@@ -50,34 +50,44 @@ impl OpenSearchClient {
     /// Charge les éventuels certificats (CA privée, identité mTLS) depuis le
     /// disque. Échoue si un fichier est illisible ou mal formé (fail-fast).
     pub fn from_config(cfg: &MonitoringConfig) -> Result<Self, OpenSearchError> {
+        let is_https = cfg.base_url.starts_with("https://");
+
         let mut builder = Client::builder()
-            // TLS obligatoire : aucune requête en clair n'est émise.
-            .https_only(true)
-            .min_tls_version(reqwest::tls::Version::TLS_1_2)
-            .use_rustls_tls()
             .connect_timeout(Duration::from_secs(3))
             .timeout(cfg.request_timeout)
             // Pas de redirection : un cluster ne redirige pas, c'est suspect.
             .redirect(reqwest::redirect::Policy::none());
 
-        // CA privée : ajoute la racine de confiance sans désactiver la
-        // vérification (on n'expose JAMAIS d'option `accept_invalid_certs`).
-        if let Some(path) = &cfg.ca_cert_path {
-            let pem = std::fs::read(path)
-                .map_err(|e| OpenSearchError::Build(format!("read CA cert {path}: {e}")))?;
-            let cert = reqwest::Certificate::from_pem(&pem)
-                .map_err(|e| OpenSearchError::Build(format!("parse CA cert: {e}")))?;
-            builder = builder.add_root_certificate(cert);
-        }
+        if is_https {
+            // TLS obligatoire pour un endpoint https : aucune dégradation en clair.
+            builder = builder
+                .https_only(true)
+                .min_tls_version(reqwest::tls::Version::TLS_1_2)
+                .use_rustls_tls();
 
-        // Identité client (mTLS) : PEM concaténant le certificat et la clé.
-        if let Some(path) = &cfg.client_identity_path {
-            let pem = std::fs::read(path)
-                .map_err(|e| OpenSearchError::Build(format!("read client identity {path}: {e}")))?;
-            let identity = reqwest::Identity::from_pem(&pem)
-                .map_err(|e| OpenSearchError::Build(format!("parse client identity: {e}")))?;
-            builder = builder.identity(identity);
+            // CA privée : ajoute la racine de confiance sans désactiver la
+            // vérification (on n'expose JAMAIS d'option `accept_invalid_certs`).
+            if let Some(path) = &cfg.ca_cert_path {
+                let pem = std::fs::read(path)
+                    .map_err(|e| OpenSearchError::Build(format!("read CA cert {path}: {e}")))?;
+                let cert = reqwest::Certificate::from_pem(&pem)
+                    .map_err(|e| OpenSearchError::Build(format!("parse CA cert: {e}")))?;
+                builder = builder.add_root_certificate(cert);
+            }
+
+            // Identité client (mTLS) : PEM concaténant le certificat et la clé.
+            if let Some(path) = &cfg.client_identity_path {
+                let pem = std::fs::read(path).map_err(|e| {
+                    OpenSearchError::Build(format!("read client identity {path}: {e}"))
+                })?;
+                let identity = reqwest::Identity::from_pem(&pem)
+                    .map_err(|e| OpenSearchError::Build(format!("parse client identity: {e}")))?;
+                builder = builder.identity(identity);
+            }
         }
+        // NB : si l'URL est en http:// (dev, OPENSEARCH_ALLOW_INSECURE=true validé
+        // par la config), on n'applique aucune contrainte TLS — le cluster de dev
+        // n'est joignable que sur le réseau Docker interne, jamais exposé.
 
         let http = builder
             .build()
