@@ -17,7 +17,7 @@ use axum::response::Response;
 use time::OffsetDateTime;
 
 use crate::errors::ErrorCode;
-use crate::middleware::client::resolve_client_ip;
+use crate::middleware::client::{client_ip, peer_ip};
 use crate::state::AppState;
 
 use super::event::{outcome_for, ApiLogEvent};
@@ -51,11 +51,11 @@ pub async fn record_requests(
         .and_then(|v| v.to_str().ok())
         // Borne la longueur (évite un UA géant dans l'index).
         .map(|s| s.chars().take(256).collect::<String>());
-    let client_ip = resolve_client_ip(
-        request.headers(),
-        request.extensions(),
-        state.config.trusted_proxy_hops,
-    );
+    // IP cliente de CONFIANCE (résistante à l'usurpation XFF), via l'API
+    // partagée avec le rate limiting (cf. middleware::client).
+    let peer = peer_ip(request.extensions());
+    let client_ip = client_ip(request.headers(), peer, state.config.trusted_proxy_hops)
+        .map(|ip| ip.to_string());
 
     let started = Instant::now();
     let response = next.run(request).await;
