@@ -1,12 +1,12 @@
 //! Middleware Axum capturant l'issue de CHAQUE requête (succès/erreur) pour
-//! l'envoyer au monitoring OpenSearch.
+//! alimenter les métriques Prometheus et le monitoring OpenSearch.
 //!
 //! Placement (cf. `routes`) : à l'intérieur du `SetRequestIdLayer` (pour lire
 //! le correlation id) mais à l'extérieur des couches métier (timeout, CORS,
 //! limites…), afin de capturer aussi les 408/413/500 générés par la pile.
 //!
-//! Strictement NON BLOQUANT : on n'émet qu'un `record()` best-effort après la
-//! réponse ; aucune attente réseau sur le chemin de la requête.
+//! Strictement NON BLOQUANT : métriques en mémoire (verrou bref) + `record()`
+//! best-effort vers OpenSearch ; aucune attente réseau sur le chemin de requête.
 
 use std::time::Instant;
 
@@ -25,17 +25,15 @@ use super::event::access_log;
 /// Correlation id par défaut si l'en-tête est absent (ne devrait pas arriver).
 const UNKNOWN: &str = "unknown";
 
-/// Middleware `from_fn_with_state` : enregistre un `ApiLogEvent` par requête.
+/// Chemin du scrape Prometheus : exclu des métriques et des logs (auto-bruit).
+const METRICS_PATH: &str = "/metrics";
+
+/// Middleware `from_fn_with_state` : métriques + log d'accès par requête.
 pub async fn record_requests(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Response {
-    // Monitoring désactivé : on ne fait rien (zéro surcoût).
-    let Some(handle) = state.monitoring.clone() else {
-        return next.run(request).await;
-    };
-
     // Métadonnées extraites AVANT de céder la requête (pas de query string).
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
@@ -59,26 +57,41 @@ pub async fn record_requests(
 
     let started = Instant::now();
     let response = next.run(request).await;
-    let latency_ms = started.elapsed().as_millis() as u64;
+    let elapsed = started.elapsed();
+
+    // On n'instrumente pas le endpoint de scrape lui-même (sinon Prometheus
+    // pollue ses propres métriques et le journal OpenSearch à chaque scrape).
+    if path == METRICS_PATH {
+        return response;
+    }
 
     let status = response.status().as_u16();
-    // Code d'erreur applicatif stable, attaché par `ApiError` en extension.
-    let error_code = response
-        .extensions()
-        .get::<ErrorCode>()
-        .map(|c| c.0.to_owned());
 
-    handle.record(access_log(
-        OffsetDateTime::now_utc(),
-        request_id,
-        method,
-        path,
-        status,
-        latency_ms,
-        error_code,
-        client_ip,
-        user_agent,
-    ));
+    // 1) Métriques Prometheus (toujours actives, en mémoire).
+    state
+        .metrics
+        .observe_request(&method, &path, status, elapsed.as_secs_f64());
+
+    // 2) Log d'accès vers OpenSearch (si le monitoring est configuré).
+    if let Some(handle) = &state.monitoring {
+        // Code d'erreur applicatif stable, attaché par `ApiError` en extension.
+        let error_code = response
+            .extensions()
+            .get::<ErrorCode>()
+            .map(|c| c.0.to_owned());
+
+        handle.record(access_log(
+            OffsetDateTime::now_utc(),
+            request_id,
+            method,
+            path,
+            status,
+            elapsed.as_millis() as u64,
+            error_code,
+            client_ip,
+            user_agent,
+        ));
+    }
 
     response
 }

@@ -18,7 +18,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{admin, auth, health, users};
+use crate::handlers::{admin, auth, health, metrics, users};
 use crate::middleware::client::RateLimitKeyExtractor;
 use crate::middleware::security_headers::SECURITY_HEADERS;
 use crate::monitoring::layer::record_requests;
@@ -70,6 +70,8 @@ pub fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/health", get(health::liveness))
         .route("/health/ready", get(health::readiness))
+        // Exposition Prometheus (scrape interne). Pas d'auth, agrégats seulement.
+        .route("/metrics", get(metrics::metrics))
         .nest("/api/v1", api_routes)
         // Toute route inconnue => 404 JSON générique (pas de fuite de structure).
         .fallback(handler_404)

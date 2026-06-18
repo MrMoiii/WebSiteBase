@@ -362,6 +362,32 @@ async fn pagination_rejects_out_of_range() {
 }
 
 #[tokio::test]
+async fn metrics_endpoint_exposes_prometheus_text() {
+    let app = spawn_app().await;
+    // Génère du trafic mesurable avant de scraper.
+    let _ = client().get(app.url("/health")).send().await.unwrap();
+
+    let resp = client().get(app.url("/metrics")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.contains("text/plain"),
+        "format Prometheus texte"
+    );
+
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("# TYPE http_requests_total counter"));
+    assert!(body.contains("http_request_duration_seconds_bucket"));
+    // Aucune donnée à haute cardinalité (corrélation = rôle des logs, pas des métriques).
+    assert!(!body.contains("request_id"));
+}
+
+#[tokio::test]
 async fn unknown_route_is_not_found() {
     let app = spawn_app().await;
     let resp = client()

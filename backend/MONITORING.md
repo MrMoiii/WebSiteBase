@@ -1,25 +1,33 @@
-# Monitoring d'API via OpenSearch (observabilité & debug)
+# Observabilité de l'API (logs OpenSearch + métriques Prometheus)
 
-Panneau d'**observabilité des appels d'API** : chaque requête (succès **et**
-erreur) est journalisée dans OpenSearch avec ses métadonnées techniques, puis
-visualisée et filtrée dans **OpenSearch Dashboards** pour le debugging.
+Deux piliers complémentaires de l'observabilité des appels d'API :
 
-PostgreSQL reste la base principale ; OpenSearch n'est utilisé **que** comme
-magasin de logs secondaire, reconstructible et jetable.
+- **Logs** (OpenSearch + Dashboards) : chaque requête et chaque événement
+  applicatif (succès **et** erreur) est journalisé avec ses métadonnées et un
+  `request_id` pour la **corrélation** — pour le debugging fin.
+- **Métriques** (Prometheus) : agrégats numériques (volume de requêtes, statuts,
+  **latence**, **taux d'erreur**) exposés sur `/metrics` et *scrapés* par
+  Prometheus — pour les tableaux de bord et l'alerting. (Prometheus stocke des
+  séries temporelles, **pas** des logs : les deux sont complémentaires.)
 
-> Fonctionnalité **opt-in** : sans `OPENSEARCH_URL`, le monitoring est désactivé
-> et l'application fonctionne exactement comme avant (aucun envoi, zéro surcoût).
+PostgreSQL reste la base principale ; OpenSearch n'est qu'un magasin de logs
+secondaire, reconstructible et jetable.
+
+> **Opt-in** : sans `OPENSEARCH_URL`, les LOGS sont désactivés. Les MÉTRIQUES
+> Prometheus (`/metrics`), elles, sont toujours actives (peu coûteuses,
+> indépendantes d'OpenSearch).
 
 ## Sommaire
 
 1. [Architecture](#1-architecture)
 2. [Flux & garanties de non-blocage](#2-flux--garanties-de-non-blocage)
 3. [Modules Rust](#3-modules-rust)
-4. [Document indexé & mapping](#4-document-indexé--mapping)
-5. [Déploiement (Docker + TLS + Dashboards)](#5-déploiement-docker--tls--dashboards)
+4. [Documents indexés & mapping](#4-documents-indexés--mapping)
+5. [Déploiement (Docker + Dashboards)](#5-déploiement-docker--dashboards)
 6. [Le panneau Dashboards (debug)](#6-le-panneau-dashboards-debug)
-7. [Sécurité & confidentialité](#7-sécurité--confidentialité)
-8. [Tests](#8-tests)
+7. [Métriques Prometheus](#7-métriques-prometheus)
+8. [Sécurité & confidentialité](#8-sécurité--confidentialité)
+9. [Tests](#9-tests)
 
 ---
 
@@ -86,11 +94,13 @@ backend/src/
 │   ├── client.rs    # OpenSearchClient : TLS/mTLS, auth, _bulk, _index_template, ping
 │   ├── event.rs     # LogDoc (access|event) + classification + index quotidien + mapping
 │   ├── shipper.rs   # MonitoringHandle + tâche de fond (tampon, lots, abandon)
-│   ├── layer.rs     # middleware Axum : doc de synthèse par requête (kind=access)
-│   └── log_layer.rs # couche tracing : expédie tout événement applicatif (kind=event)
+│   ├── layer.rs     # middleware Axum : métriques + doc de synthèse (kind=access)
+│   ├── log_layer.rs # couche tracing : expédie tout événement applicatif (kind=event)
+│   └── metrics.rs   # registre Prometheus (compteurs + histogramme) + rendu /metrics
+├── handlers/metrics.rs # endpoint GET /metrics (exposition Prometheus)
 ├── config.rs        # MonitoringConfig (+ OpenSearchAuth) — fail-fast, https:// imposé
-├── state.rs         # AppState.monitoring: Option<MonitoringHandle> (clone léger)
-├── routes/mod.rs    # insertion du middleware de monitoring dans la pile
+├── state.rs         # AppState.monitoring + AppState.metrics (Arc<Metrics>)
+├── routes/mod.rs    # middleware de monitoring + route /metrics
 └── errors.rs        # ErrorCode attaché en extension de réponse (lu par le middleware)
 ```
 
@@ -159,16 +169,19 @@ le **plugin de sécurité OpenSearch est désactivé** (HTTP interne, pas d'auth
 
 ```bash
 cd backend
-# Stack complète : API + PostgreSQL + OpenSearch + Dashboards.
+# Stack complète : API + PostgreSQL + OpenSearch + Dashboards + Prometheus.
 docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
-# Générer du trafic puis ouvrir le panneau.
+# Générer du trafic puis ouvrir les panneaux.
 curl -s http://localhost:8080/health >/dev/null
-#   Dashboards : http://localhost:5601   (pas d'identifiants : sécurité désactivée)
+curl -s http://localhost:8080/metrics            # métriques brutes (texte Prometheus)
+#   Dashboards (logs)  : http://localhost:5601   (pas d'identifiants : sécurité désactivée)
+#   Prometheus (métriques) : http://localhost:9090  (Status → Targets : api doit être UP)
 ```
 
 - OpenSearch **n'expose aucun port** sur l'hôte (réseau Docker interne) ; seul
   le backend et Dashboards le joignent.
-- Dashboards (le panneau) est sur `127.0.0.1:5601` (opérateur uniquement).
+- Dashboards (panneau logs) est sur `127.0.0.1:5601`, Prometheus sur
+  `127.0.0.1:9090` (opérateur uniquement).
 - Le backend pointe sur `http://opensearch:9200` avec `OPENSEARCH_ALLOW_INSECURE=true`
   (toléré seulement parce que le cluster est sur le réseau interne).
 
@@ -212,7 +225,49 @@ Dans OpenSearch Dashboards :
 `request_id` est la clé pour croiser un événement du panneau avec les logs
 JSON `tracing` du backend (même `correlation_id`).
 
-## 7. Sécurité & confidentialité
+## 7. Métriques Prometheus
+
+Le backend expose un endpoint **`GET /metrics`** (format texte Prometheus 0.0.4,
+exposeur fait main — aucune dépendance ajoutée). Le middleware
+`monitoring::layer` alimente les séries pour **chaque** requête (le endpoint
+`/metrics` lui-même est exclu pour ne pas s'auto-mesurer) :
+
+| Métrique | Type | Labels | Usage |
+|---|---|---|---|
+| `http_requests_total` | counter | `method`, `route`, `status`, `outcome` | volume, répartition statuts, **taux d'erreur** |
+| `http_request_duration_seconds` | histogram | `method`, `route` | **latence** (p50/p95/p99 via `histogram_quantile`) |
+
+**Cardinalité bornée** (anti-explosion de séries — règle clé de Prometheus) :
+`method` et `route` sont normalisés vers des ensembles **fermés** de valeurs ;
+un chemin inconnu (scanner, route absente) est replié sur `route="other"`. On
+n'expose **jamais** de label à haute cardinalité (pas de `request_id`, pas
+d'URL brute) — ça, c'est le rôle des logs OpenSearch.
+
+Exemples PromQL :
+
+```promql
+# Taux d'erreur 5xx (sur 5 min)
+sum(rate(http_requests_total{outcome="server_error"}[5m]))
+  / sum(rate(http_requests_total[5m]))
+
+# Latence p95 par route
+histogram_quantile(0.95,
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))
+
+# Requêtes par seconde par statut
+sum(rate(http_requests_total[1m])) by (status)
+```
+
+Prometheus *scrape* `api:8080/metrics` toutes les 15 s (cf.
+[`docker/prometheus/prometheus.yml`](./docker/prometheus/prometheus.yml)) et son
+UI/PromQL est exposée sur `http://localhost:9090` (cible **Status → Targets**
+doit être `UP`). Brancher Grafana dessus pour des tableaux de bord si besoin.
+
+> Le endpoint `/metrics` ne contient que des agrégats (aucune donnée sensible),
+> mais reste à **restreindre au niveau réseau** (scrape interne) — ne pas
+> l'exposer publiquement.
+
+## 8. Sécurité & confidentialité
 
 - **TLS obligatoire** backend ↔ cluster (`https_only`, TLS ≥ 1.2) ; démarrage
   refusé si `OPENSEARCH_URL` n'est pas `https://`.
@@ -228,8 +283,12 @@ JSON `tracing` du backend (même `correlation_id`).
 - **Best-effort & isolé** : une panne d'OpenSearch n'impacte ni la latence ni
   la disponibilité de l'API (abandon silencieux + log).
 
-## 8. Tests
+## 9. Tests
 
+- **Unitaires** (`cargo test --lib`, module `monitoring::metrics`) :
+  normalisation des labels (route/méthode inconnues → cardinalité bornée),
+  rendu Prometheus (compteurs agrégés, buckets cumulatifs, `_sum`/`_count`),
+  absence de label à haute cardinalité (`request_id`).
 - **Unitaires** (`cargo test --lib`, module `monitoring::event`) :
   classification d'issue (`success`/`client_error`/`server_error`), nom d'index
   quotidien, sérialisation (présence de `@timestamp`, **absence** de champ

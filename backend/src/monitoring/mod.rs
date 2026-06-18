@@ -23,9 +23,11 @@ pub mod client;
 pub mod event;
 pub mod layer;
 pub mod log_layer;
+pub mod metrics;
 pub mod shipper;
 
 pub use client::{OpenSearchClient, OpenSearchError};
+pub use metrics::Metrics;
 pub use shipper::{spawn, MonitoringHandle};
 
 use std::sync::OnceLock;

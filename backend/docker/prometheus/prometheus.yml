@@ -1,0 +1,16 @@
+# =============================================================================
+# Configuration Prometheus (DÉVELOPPEMENT) : scrape les métriques de l'API.
+#
+# Prometheus stocke des SÉRIES TEMPORELLES (compteurs, histogrammes), pas des
+# logs. Les logs détaillés (corrélés par request_id) vivent dans OpenSearch.
+# =============================================================================
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: websitebase-api
+    metrics_path: /metrics
+    static_configs:
+      # `api` = nom du service backend sur le réseau Docker interne.
+      - targets: ["api:8080"]

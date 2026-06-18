@@ -6,7 +6,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::config::Config;
-use crate::monitoring::MonitoringHandle;
+use crate::monitoring::{Metrics, MonitoringHandle};
 
 /// État cloné à chaque requête. `PgPool` est un `Arc` interne (clone bon marché)
 /// et `Config` est encapsulée dans un `Arc` pour partager la config immuable.
@@ -17,6 +17,9 @@ pub struct AppState {
     /// Poignée de monitoring (clone léger : un `Sender` mpsc). `None` si le
     /// monitoring OpenSearch n'est pas configuré.
     pub monitoring: Option<MonitoringHandle>,
+    /// Registre de métriques Prometheus, exposé sur `/metrics`. Toujours actif
+    /// (indépendant d'OpenSearch) et peu coûteux.
+    pub metrics: Arc<Metrics>,
 }
 
 impl AppState {
@@ -25,6 +28,7 @@ impl AppState {
             config: Arc::new(config),
             pool,
             monitoring: None,
+            metrics: Arc::new(Metrics::new()),
         }
     }
 

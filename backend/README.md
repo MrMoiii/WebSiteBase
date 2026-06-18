@@ -200,6 +200,7 @@ Un correlation id est renvoyé dans l'en-tête `x-request-id`.
 |---|---|---|---|
 | `GET` | `/health` | — | Liveness. |
 | `GET` | `/health/ready` | — | Readiness (ping DB). |
+| `GET` | `/metrics` | — | Métriques Prometheus (scrape interne). Voir [`MONITORING.md`](./MONITORING.md). |
 | `POST` | `/api/v1/auth/register` | — | Inscription. Renvoie un token d'accès + pose le cookie de refresh. |
 | `POST` | `/api/v1/auth/login` | — | Connexion. |
 | `POST` | `/api/v1/auth/refresh` | cookie | Rotation du refresh token. |

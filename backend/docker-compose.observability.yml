@@ -4,12 +4,17 @@
 # Usage (aucun certificat requis) :
 #   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
 #
+# Stack d'observabilité locale :
+#   - OpenSearch + Dashboards : LOGS (access + events, corrélés par request_id) ;
+#   - Prometheus : MÉTRIQUES (scrape de /metrics sur l'API) — séries numériques.
+#
 # Mode DÉVELOPPEMENT SIMPLE : le plugin de sécurité OpenSearch est DÉSACTIVÉ
 # (HTTP, pas d'auth, pas de TLS, pas de certs à générer). C'est volontaire pour
 # un panneau de debug local :
 #   - OpenSearch n'est PAS exposé sur l'hôte (aucun `ports:`) : joignable
 #     uniquement par le backend et Dashboards sur le réseau Docker interne ;
-#   - Dashboards (le panneau) est exposé sur 127.0.0.1:5601 (opérateur seul) ;
+#   - Dashboards (le panneau logs) est exposé sur 127.0.0.1:5601 (opérateur) ;
+#   - Prometheus (UI/PromQL) est exposé sur 127.0.0.1:9090 (opérateur) ;
 #   - le backend parle au cluster en http:// via OPENSEARCH_ALLOW_INSECURE=true.
 #
 # ⚠️ En PRODUCTION : cluster managé sécurisé (TLS + auth/mTLS), JAMAIS ce
@@ -37,6 +42,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    security_opt:
+      - "no-new-privileges:true"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    depends_on:
+      - api
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    # UI/PromQL exposée à l'opérateur uniquement (localhost).
+    ports:
+      - "127.0.0.1:9090:9090"
     security_opt:
       - "no-new-privileges:true"
 
@@ -74,3 +92,4 @@ services:
 
 volumes:
   opensearch-data:
+  prometheus-data:
