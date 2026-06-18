@@ -1,17 +1,21 @@
-//! Événement de monitoring d'API : ce qui est indexé dans OpenSearch pour
-//! observer les succès et erreurs des appels (debugging).
+//! Documents de log envoyés à OpenSearch (observabilité des appels d'API).
 //!
-//! Règle de confidentialité (cohérente avec `telemetry`/`errors`) : on n'indexe
-//! AUCUNE donnée sensible. Pas de corps de requête/réponse, pas d'en-tête
-//! d'autorisation, pas de query string (qui pourrait contenir des termes
-//! personnels) — uniquement des métadonnées techniques utiles au debug.
+//! Deux familles de documents, dans le MÊME index quotidien, corrélables par
+//! `request_id` :
+//! - `kind = "access"` : une synthèse par requête HTTP (méthode, chemin, statut,
+//!   latence, code d'erreur) — produite par le middleware `layer` ;
+//! - `kind = "event"`  : chaque événement `tracing` applicatif (raise d'erreur,
+//!   événement de sécurité/métier…) — produit par la couche `log_layer`.
+//!
+//! Confidentialité (cohérente avec `telemetry`/`errors`) : on n'indexe aucune
+//! donnée sensible (ni corps, ni en-tête d'auth, ni query string).
 
-use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-/// Catégorie d'issue d'un appel, dérivée du code HTTP (facilite le filtrage
-/// « erreurs vs succès » dans le tableau de bord).
+/// Catégorie d'issue d'un appel, dérivée du code HTTP (filtrage « erreurs vs
+/// succès » dans le tableau de bord).
 pub fn outcome_for(status: u16) -> &'static str {
     match status {
         500..=599 => "server_error",
@@ -20,58 +24,97 @@ pub fn outcome_for(status: u16) -> &'static str {
     }
 }
 
-/// Document indexé pour un appel d'API. Champs alignés sur le mapping strict.
-#[derive(Debug, Clone, Serialize)]
-pub struct ApiLogEvent {
-    /// Horodatage de la requête (sérialisé en RFC3339 → champ `@timestamp`).
-    #[serde(rename = "@timestamp", with = "time::serde::rfc3339")]
+/// Document prêt à indexer : horodatage (pour le routage par index quotidien)
+/// + corps JSON (qui contient lui-même `@timestamp`).
+#[derive(Debug, Clone)]
+pub struct LogDoc {
     pub timestamp: OffsetDateTime,
-    /// Correlation id (croise les logs applicatifs `tracing`).
-    pub request_id: String,
-    pub method: String,
-    /// Chemin de la requête SANS query string (anti-fuite de données).
-    pub path: String,
-    pub status: u16,
-    /// `success` | `client_error` | `server_error`.
-    pub outcome: &'static str,
-    pub latency_ms: u64,
-    /// Code d'erreur applicatif stable, si la réponse en portait un.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_agent: Option<String>,
+    pub body: Map<String, Value>,
 }
 
-impl ApiLogEvent {
-    /// Nom de l'index quotidien cible : `{prefix}-YYYY.MM.DD` (rotation par
-    /// jour ⇒ purge/rétention simple via une politique ISM côté cluster).
-    pub fn index_name(&self, prefix: &str) -> String {
-        let d = self.timestamp.date();
-        format!(
-            "{prefix}-{:04}.{:02}.{:02}",
-            d.year(),
-            u8::from(d.month()),
-            d.day()
-        )
+/// Formate un horodatage en RFC3339 (champ `@timestamp`).
+fn rfc3339(ts: OffsetDateTime) -> String {
+    ts.format(&Rfc3339)
+        .unwrap_or_else(|_| ts.unix_timestamp().to_string())
+}
+
+/// Squelette commun d'un document : `@timestamp`, `kind`, `level`.
+pub fn base_doc(ts: OffsetDateTime, kind: &str, level: &str) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("@timestamp".into(), json!(rfc3339(ts)));
+    m.insert("kind".into(), json!(kind));
+    m.insert("level".into(), json!(level));
+    m
+}
+
+/// Construit le document de synthèse d'une requête HTTP (`kind = "access"`).
+#[allow(clippy::too_many_arguments)]
+pub fn access_log(
+    ts: OffsetDateTime,
+    request_id: String,
+    method: String,
+    path: String,
+    status: u16,
+    latency_ms: u64,
+    error_code: Option<String>,
+    client_ip: Option<String>,
+    user_agent: Option<String>,
+) -> LogDoc {
+    let mut m = base_doc(ts, "access", "info");
+    m.insert("request_id".into(), json!(request_id));
+    m.insert("method".into(), json!(method));
+    m.insert("path".into(), json!(path));
+    m.insert("status".into(), json!(status));
+    m.insert("outcome".into(), json!(outcome_for(status)));
+    m.insert("latency_ms".into(), json!(latency_ms));
+    if let Some(ec) = error_code {
+        m.insert("error_code".into(), json!(ec));
+    }
+    if let Some(ip) = client_ip {
+        m.insert("client_ip".into(), json!(ip));
+    }
+    if let Some(ua) = user_agent {
+        m.insert("user_agent".into(), json!(ua));
+    }
+    LogDoc {
+        timestamp: ts,
+        body: m,
     }
 }
 
 /// Nom de l'index template (et préfixe des patterns `*`).
 pub const TEMPLATE_NAME: &str = "api-logs";
 
-/// Définition de l'index template : mapping STRICT versionné appliqué à tous
-/// les index `{prefix}-*`. `dynamic: strict` refuse tout champ non déclaré.
+/// Nom de l'index quotidien cible : `{prefix}-YYYY.MM.DD` (rotation par jour ⇒
+/// rétention/purge simple via une politique ISM côté cluster).
+pub fn index_name_for(prefix: &str, ts: OffsetDateTime) -> String {
+    let d = ts.date();
+    format!(
+        "{prefix}-{:04}.{:02}.{:02}",
+        d.year(),
+        u8::from(d.month()),
+        d.day()
+    )
+}
+
+/// Définition de l'index template appliquée à tous les index `{prefix}-*`.
+///
+/// `dynamic: true` : un index de LOGS doit accepter les champs structurés
+/// variables des événements (`event`, `user.id`, `error.detail`…). Les champs
+/// usuels sont typés explicitement pour des agrégations correctes.
 pub fn index_template(prefix: &str) -> Value {
     json!({
         "index_patterns": [format!("{prefix}-*")],
         "template": {
             "settings": { "number_of_shards": 1, "number_of_replicas": 1 },
             "mappings": {
-                "dynamic": "strict",
+                "dynamic": true,
                 "properties": {
                     "@timestamp":  { "type": "date" },
+                    "kind":        { "type": "keyword" },
+                    "level":       { "type": "keyword" },
+                    "target":      { "type": "keyword" },
+                    "message":     { "type": "text" },
                     "request_id":  { "type": "keyword" },
                     "method":      { "type": "keyword" },
                     "path":        { "type": "keyword" },
@@ -87,16 +130,15 @@ pub fn index_template(prefix: &str) -> Value {
     })
 }
 
-/// Sérialise un lot d'événements en NDJSON pour l'API `_bulk`, en routant
+/// Sérialise un lot de documents en NDJSON pour l'API `_bulk`, en routant
 /// chaque document vers son index quotidien (action `create`).
-pub fn to_bulk_ndjson(events: &[ApiLogEvent], prefix: &str) -> String {
-    let mut out = String::with_capacity(events.len() * 256);
-    for ev in events {
-        let action = json!({ "create": { "_index": ev.index_name(prefix) } });
+pub fn to_bulk_ndjson(docs: &[LogDoc], prefix: &str) -> String {
+    let mut out = String::with_capacity(docs.len() * 256);
+    for doc in docs {
+        let action = json!({ "create": { "_index": index_name_for(prefix, doc.timestamp) } });
         out.push_str(&action.to_string());
         out.push('\n');
-        // `ApiLogEvent` ne contient que des champs sûrs : sérialisation directe.
-        out.push_str(&serde_json::to_string(ev).unwrap_or_else(|_| "{}".to_string()));
+        out.push_str(&serde_json::to_string(&doc.body).unwrap_or_else(|_| "{}".to_string()));
         out.push('\n');
     }
     out
@@ -106,19 +148,8 @@ pub fn to_bulk_ndjson(events: &[ApiLogEvent], prefix: &str) -> String {
 mod tests {
     use super::*;
 
-    fn sample(status: u16) -> ApiLogEvent {
-        ApiLogEvent {
-            timestamp: OffsetDateTime::from_unix_timestamp(1_767_225_600).unwrap(), // 2026-01-01
-            request_id: "rid-1".into(),
-            method: "GET".into(),
-            path: "/api/v1/users/me".into(),
-            status,
-            outcome: outcome_for(status),
-            latency_ms: 12,
-            error_code: None,
-            client_ip: Some("203.0.113.7".into()),
-            user_agent: Some("curl/8".into()),
-        }
+    fn ts() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_767_225_600).unwrap() // 2026-01-01
     }
 
     #[test]
@@ -131,30 +162,63 @@ mod tests {
 
     #[test]
     fn index_name_is_daily() {
-        assert_eq!(sample(200).index_name("api-logs"), "api-logs-2026.01.01");
+        assert_eq!(index_name_for("api-logs", ts()), "api-logs-2026.01.01");
     }
 
     #[test]
-    fn serialization_excludes_query_and_uses_timestamp_field() {
-        let v = serde_json::to_value(sample(200)).unwrap();
-        assert!(v.get("@timestamp").is_some());
-        assert_eq!(v["path"], "/api/v1/users/me");
-        // Aucun champ de corps/secret ne doit apparaître.
-        assert!(v.get("authorization").is_none());
-        assert!(v.get("body").is_none());
-        // error_code absent => non sérialisé.
-        assert!(v.get("error_code").is_none());
+    fn access_log_has_correlation_and_no_sensitive_fields() {
+        let d = access_log(
+            ts(),
+            "rid-1".into(),
+            "POST".into(),
+            "/api/v1/auth/login".into(),
+            401,
+            12,
+            Some("unauthorized".into()),
+            Some("203.0.113.7".into()),
+            Some("curl/8".into()),
+        );
+        assert_eq!(d.body["kind"], "access");
+        assert_eq!(d.body["request_id"], "rid-1");
+        assert_eq!(d.body["outcome"], "client_error");
+        assert_eq!(d.body["error_code"], "unauthorized");
+        assert!(d.body.get("@timestamp").is_some());
+        // Jamais de corps/secret indexé.
+        assert!(d.body.get("authorization").is_none());
+        assert!(d.body.get("body").is_none());
     }
 
     #[test]
     fn bulk_ndjson_pairs_action_and_source() {
-        let events = vec![sample(200), sample(500)];
-        let ndjson = to_bulk_ndjson(&events, "api-logs");
+        let docs = vec![
+            access_log(
+                ts(),
+                "a".into(),
+                "GET".into(),
+                "/x".into(),
+                200,
+                1,
+                None,
+                None,
+                None,
+            ),
+            access_log(
+                ts(),
+                "b".into(),
+                "GET".into(),
+                "/y".into(),
+                500,
+                2,
+                None,
+                None,
+                None,
+            ),
+        ];
+        let ndjson = to_bulk_ndjson(&docs, "api-logs");
         let lines: Vec<&str> = ndjson.lines().collect();
-        assert_eq!(lines.len(), 4); // 2 events => 4 lignes
+        assert_eq!(lines.len(), 4);
         assert!(lines[0].contains("\"_index\":\"api-logs-2026.01.01\""));
-        assert!(lines[0].contains("\"create\""));
-        assert!(lines[1].contains("\"outcome\":\"success\""));
-        assert!(lines[3].contains("\"outcome\":\"server_error\""));
+        assert!(lines[1].contains("\"request_id\":\"a\""));
+        assert!(lines[3].contains("\"status\":500"));
     }
 }

@@ -22,8 +22,25 @@
 pub mod client;
 pub mod event;
 pub mod layer;
+pub mod log_layer;
 pub mod shipper;
 
 pub use client::{OpenSearchClient, OpenSearchError};
-pub use event::ApiLogEvent;
 pub use shipper::{spawn, MonitoringHandle};
+
+use std::sync::OnceLock;
+
+/// Poignée globale utilisée par la couche `tracing` (`log_layer`), qui ne
+/// dispose pas de l'`AppState`. Renseignée une fois au démarrage si le
+/// monitoring est activé ; sinon la couche n'expédie rien.
+static GLOBAL_HANDLE: OnceLock<MonitoringHandle> = OnceLock::new();
+
+/// Renseigne la poignée globale (idempotent : seul le premier appel compte).
+pub fn set_global_handle(handle: MonitoringHandle) {
+    let _ = GLOBAL_HANDLE.set(handle);
+}
+
+/// Accès à la poignée globale (None si monitoring désactivé).
+pub fn global_handle() -> Option<&'static MonitoringHandle> {
+    GLOBAL_HANDLE.get()
+}

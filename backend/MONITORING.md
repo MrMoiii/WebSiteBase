@@ -25,26 +25,38 @@ magasin de logs secondaire, reconstructible et jetable.
 
 ## 1. Architecture
 
+Chaque requête API reçoit un **`request_id`** (UUID généré par `SetRequestIdLayer`
+au moment de l'appel). Deux sources alimentent OpenSearch, **toutes deux
+estampillées de ce `request_id`** pour permettre la corrélation :
+
 ```
-Requête HTTP
+Requête HTTP  ──►  SetRequestIdLayer (génère request_id)
    │
-   ▼
-monitoring::layer   middleware Axum : mesure latence + capture statut/code/IP/UA
-   │  record()  ── try_send NON bloquant (abandon si saturé)
-   ▼
-monitoring::shipper tâche de fond : tampon + envoi par lots (_bulk), best-effort
+   ├─► monitoring::layer     middleware : 1 doc de synthèse / requête (kind="access")
+   │                         (méthode, chemin, statut, latence, code d'erreur, IP, UA)
    │
-   ▼
-monitoring::client  OpenSearchClient : TLS≥1.2 / mTLS, auth (Basic|ApiKey), HTTP
-   │
-   ▼
-OpenSearch  ◀── OpenSearch Dashboards (le « panneau » de debug, séparé)
+   └─► span http_request ───► tracing events (raises ApiError, login, métier…)
+                              │
+                              ▼
+              monitoring::log_layer  couche tracing : 1 doc / événement (kind="event"),
+                                     request_id repris du span de la requête
+                 │
+   les deux ──►  MonitoringHandle.record()  ── try_send NON bloquant (abandon si saturé)
+                 ▼
+              monitoring::shipper  tâche de fond : tampon + envoi par lots (_bulk)
+                 ▼
+              monitoring::client   OpenSearchClient : TLS≥1.2 / mTLS, auth, HTTP
+                 ▼
+              OpenSearch  ◀── OpenSearch Dashboards (le « panneau » de debug)
 ```
 
-Le middleware est inséré **après** `SetRequestIdLayer` (pour disposer du
-correlation id) mais **autour** des couches métier (timeout, CORS, limite de
-taille…) : il capture donc aussi les `408`, `413`, `500` générés par la pile,
-pas seulement les réponses des handlers.
+- Le **middleware** est inséré **après** `SetRequestIdLayer` mais **autour** des
+  couches métier (timeout, CORS, limite…) : il capture aussi les `408`/`413`/`500`
+  générés par la pile, pas seulement les réponses des handlers.
+- La **couche tracing** (`log_layer`) expédie **tous** les événements `tracing`
+  de la crate applicative (toutes routes, tous `raise`/erreurs `ApiError`,
+  événements de sécurité/métier). Elle exclut ses propres logs (anti-boucle) et
+  le bruit des dépendances. Le `request_id` provient du span `http_request`.
 
 ## 2. Flux & garanties de non-blocage
 
@@ -72,47 +84,65 @@ backend/src/
 ├── monitoring/
 │   ├── mod.rs       # doc d'architecture + ré-exports
 │   ├── client.rs    # OpenSearchClient : TLS/mTLS, auth, _bulk, _index_template, ping
-│   ├── event.rs     # ApiLogEvent + classification d'issue + index quotidien + mapping
+│   ├── event.rs     # LogDoc (access|event) + classification + index quotidien + mapping
 │   ├── shipper.rs   # MonitoringHandle + tâche de fond (tampon, lots, abandon)
-│   └── layer.rs     # middleware Axum from_fn capturant l'issue de chaque requête
+│   ├── layer.rs     # middleware Axum : doc de synthèse par requête (kind=access)
+│   └── log_layer.rs # couche tracing : expédie tout événement applicatif (kind=event)
 ├── config.rs        # MonitoringConfig (+ OpenSearchAuth) — fail-fast, https:// imposé
 ├── state.rs         # AppState.monitoring: Option<MonitoringHandle> (clone léger)
 ├── routes/mod.rs    # insertion du middleware de monitoring dans la pile
 └── errors.rs        # ErrorCode attaché en extension de réponse (lu par le middleware)
 ```
 
-## 4. Document indexé & mapping
+## 4. Documents indexés & mapping
 
-Un appel produit un `ApiLogEvent` indexé dans un index **quotidien**
-`api-logs-YYYY.MM.DD` (rotation ⇒ rétention/purge simple via une politique ISM).
+Tout est indexé dans un index **quotidien** `api-logs-YYYY.MM.DD` (rotation ⇒
+rétention/purge simple via une politique ISM). **Deux `kind`**, corrélables par
+`request_id` :
+
+**`kind = "access"`** — une synthèse par requête (middleware) :
 
 ```json
 {
-  "@timestamp": "2026-06-17T10:00:00Z",
-  "request_id": "0b9c…",
-  "method": "POST",
-  "path": "/api/v1/auth/login",
-  "status": 401,
-  "outcome": "client_error",
-  "latency_ms": 12,
-  "error_code": "unauthorized",
-  "client_ip": "203.0.113.7",
-  "user_agent": "Mozilla/5.0 …"
+  "@timestamp": "2026-06-17T10:00:00Z", "kind": "access", "level": "info",
+  "request_id": "0b9c…", "method": "POST", "path": "/api/v1/auth/login",
+  "status": 401, "outcome": "client_error", "latency_ms": 12,
+  "error_code": "unauthorized", "client_ip": "203.0.113.7", "user_agent": "Mozilla/5.0 …"
 }
 ```
 
-`outcome` ∈ `success` (`< 400`) · `client_error` (`4xx`) · `server_error`
-(`5xx`) : c'est le champ pivot du tableau de bord « erreurs vs succès ».
+**`kind = "event"`** — un par événement `tracing` applicatif (couche `log_layer`) :
 
-Le **mapping strict versionné** est appliqué automatiquement à tous les index
-`api-logs-*` via un *index template* (`event::index_template`), créé au
-démarrage (idempotent). `dynamic: "strict"` refuse tout champ non déclaré.
+```json
+{
+  "@timestamp": "2026-06-17T10:00:00Z", "kind": "event", "level": "WARN",
+  "request_id": "0b9c…", "target": "websitebase_backend::handlers::auth",
+  "message": "échec de login", "event": "login_failed", "security.event": true,
+  "client.ip": "203.0.113.7"
+}
+```
+
+> **Corrélation** : pour une requête, le doc `access` et tous les docs `event`
+> partagent le **même `request_id`**. Dans Dashboards, filtrer
+> `request_id: "0b9c…"` reconstitue toute l'histoire de l'appel.
+
+`outcome` ∈ `success` (`< 400`) · `client_error` (`4xx`) · `server_error`
+(`5xx`) : champ pivot du tableau de bord « erreurs vs succès ».
+
+Le mapping est appliqué automatiquement à tous les index `api-logs-*` via un
+*index template* (`event::index_template`), créé au démarrage (idempotent). Un
+index de **logs** utilise `dynamic: true` : les champs usuels (ci-dessous) sont
+typés explicitement, et les champs structurés variables des événements
+(`event`, `user.id`, `error.detail`…) sont auto-indexés.
 
 | Champ | Type | Note |
 |---|---|---|
-| `@timestamp` | date | horodatage de la requête |
-| `request_id` | keyword | corrélation avec les logs applicatifs `tracing` |
-| `method`, `path` | keyword | `path` **sans** query string |
+| `@timestamp` | date | horodatage |
+| `kind` | keyword | `access` ou `event` |
+| `level` | keyword | niveau (`info`/`WARN`/`ERROR`…) |
+| `request_id` | keyword | **clé de corrélation** (généré au call API) |
+| `target`, `message` | keyword / text | source + message (docs `event`) |
+| `method`, `path` | keyword | `path` **sans** query string (docs `access`) |
 | `status` | short | code HTTP |
 | `outcome` | keyword | `success`/`client_error`/`server_error` |
 | `latency_ms` | long | latence mesurée par le middleware |

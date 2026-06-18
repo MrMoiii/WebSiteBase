@@ -15,22 +15,22 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use super::client::OpenSearchClient;
-use super::event::{self, ApiLogEvent};
+use super::event::{self, LogDoc};
 use crate::config::MonitoringConfig;
 
 /// Poignée légère (clonable) injectée dans l'état applicatif. Émet des
-/// événements vers la tâche de fond sans jamais bloquer.
+/// documents vers la tâche de fond sans jamais bloquer.
 #[derive(Clone)]
 pub struct MonitoringHandle {
-    tx: mpsc::Sender<ApiLogEvent>,
+    tx: mpsc::Sender<LogDoc>,
     dropped: Arc<AtomicU64>,
 }
 
 impl MonitoringHandle {
-    /// Enregistre un événement (best-effort). En cas de canal plein, l'event
+    /// Enregistre un document (best-effort). En cas de canal plein, le document
     /// est abandonné et un compteur est incrémenté (jamais de blocage).
-    pub fn record(&self, event: ApiLogEvent) {
-        if self.tx.try_send(event).is_err() {
+    pub fn record(&self, doc: LogDoc) {
+        if self.tx.try_send(doc).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -38,7 +38,7 @@ impl MonitoringHandle {
 
 /// Démarre la tâche de fond et renvoie la poignée à stocker dans l'état.
 pub fn spawn(client: OpenSearchClient, cfg: MonitoringConfig) -> MonitoringHandle {
-    let (tx, rx) = mpsc::channel::<ApiLogEvent>(cfg.channel_capacity);
+    let (tx, rx) = mpsc::channel::<LogDoc>(cfg.channel_capacity);
     let dropped = Arc::new(AtomicU64::new(0));
     tokio::spawn(run(rx, client, cfg, Arc::clone(&dropped)));
     MonitoringHandle { tx, dropped }
@@ -46,12 +46,12 @@ pub fn spawn(client: OpenSearchClient, cfg: MonitoringConfig) -> MonitoringHandl
 
 /// Boucle de la tâche de fond : tamponne puis vide par lots.
 async fn run(
-    mut rx: mpsc::Receiver<ApiLogEvent>,
+    mut rx: mpsc::Receiver<LogDoc>,
     client: OpenSearchClient,
     cfg: MonitoringConfig,
     dropped: Arc<AtomicU64>,
 ) {
-    let mut buf: Vec<ApiLogEvent> = Vec::with_capacity(cfg.batch_size);
+    let mut buf: Vec<LogDoc> = Vec::with_capacity(cfg.batch_size);
     let mut ticker = tokio::time::interval(cfg.flush_interval);
     // Évite une rafale de ticks si une vidange a pris du retard.
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -81,7 +81,7 @@ async fn run(
 
 /// Envoie le tampon courant en un `_bulk` puis le vide. Sur erreur, on logge et
 /// on abandonne le lot (les logs sont best-effort, jamais bloquants).
-async fn flush(client: &OpenSearchClient, buf: &mut Vec<ApiLogEvent>, cfg: &MonitoringConfig) {
+async fn flush(client: &OpenSearchClient, buf: &mut Vec<LogDoc>, cfg: &MonitoringConfig) {
     if buf.is_empty() {
         return;
     }

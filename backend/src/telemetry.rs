@@ -24,5 +24,8 @@ pub fn init(log_filter: &str) {
     tracing_subscriber::registry()
         .with(env_filter)
         .with(json_layer)
+        // Expédie les événements applicatifs vers OpenSearch (si le monitoring
+        // est activé). No-op tant que la poignée globale n'est pas renseignée.
+        .with(crate::monitoring::log_layer::OpenSearchLogLayer)
         .init();
 }

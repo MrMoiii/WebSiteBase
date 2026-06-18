@@ -70,8 +70,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             {
                 tracing::warn!(error.detail = %err, "échec de création de l'index template de monitoring");
             }
+            let handle = monitoring::spawn(client, mon_cfg.clone());
+            // Renseigne la poignée globale pour la couche `tracing` (log_layer),
+            // afin que TOUS les événements applicatifs partent vers OpenSearch,
+            // corrélés par request_id.
+            monitoring::set_global_handle(handle.clone());
             tracing::info!("monitoring OpenSearch initialisé");
-            Some(monitoring::spawn(client, mon_cfg.clone()))
+            Some(handle)
         }
         None => {
             tracing::info!("monitoring désactivé (OPENSEARCH_URL absent)");

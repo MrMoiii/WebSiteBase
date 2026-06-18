@@ -20,7 +20,7 @@ use crate::errors::ErrorCode;
 use crate::middleware::client::{client_ip, peer_ip};
 use crate::state::AppState;
 
-use super::event::{outcome_for, ApiLogEvent};
+use super::event::access_log;
 
 /// Correlation id par défaut si l'en-tête est absent (ne devrait pas arriver).
 const UNKNOWN: &str = "unknown";
@@ -68,18 +68,17 @@ pub async fn record_requests(
         .get::<ErrorCode>()
         .map(|c| c.0.to_owned());
 
-    handle.record(ApiLogEvent {
-        timestamp: OffsetDateTime::now_utc(),
+    handle.record(access_log(
+        OffsetDateTime::now_utc(),
         request_id,
         method,
         path,
         status,
-        outcome: outcome_for(status),
         latency_ms,
         error_code,
         client_ip,
         user_agent,
-    });
+    ));
 
     response
 }
