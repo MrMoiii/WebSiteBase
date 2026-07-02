@@ -13,8 +13,9 @@
 # un panneau de debug local :
 #   - OpenSearch n'est PAS exposé sur l'hôte (aucun `ports:`) : joignable
 #     uniquement par le backend et Dashboards sur le réseau Docker interne ;
-#   - Dashboards (le panneau logs) est exposé sur 127.0.0.1:5601 (opérateur) ;
-#   - Prometheus (UI/PromQL) est exposé sur 127.0.0.1:9090 (opérateur) ;
+#   - Dashboards (panneau logs OpenSearch) exposé sur 127.0.0.1:5601 ;
+#   - Prometheus (UI/PromQL) exposé sur 127.0.0.1:9090 ;
+#   - Grafana (dashboards UNIFIÉS métriques + logs) exposé sur 127.0.0.1:3001 ;
 #   - le backend parle au cluster en http:// via OPENSEARCH_ALLOW_INSECURE=true.
 #
 # ⚠️ En PRODUCTION : cluster managé sécurisé (TLS + auth/mTLS), JAMAIS ce
@@ -73,6 +74,31 @@ services:
     security_opt:
       - "no-new-privileges:true"
 
+  # Grafana : UNIFIE les deux sources (métriques Prometheus + logs OpenSearch).
+  # Les datasources et un dashboard de départ sont provisionnés automatiquement.
+  grafana:
+    image: grafana/grafana:11.3.0
+    depends_on:
+      - prometheus
+      - opensearch
+    environment:
+      # Plugin datasource OpenSearch (téléchargé au 1er démarrage → nécessite un
+      # accès réseau). Sans lui, seule la datasource Prometheus fonctionnera.
+      - GF_INSTALL_PLUGINS=grafana-opensearch-datasource
+      # Dev uniquement : identifiants admin faibles + pas d'inscription.
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    # UI exposée à l'opérateur (3001 pour ne pas entrer en conflit avec le front).
+    ports:
+      - "127.0.0.1:3001:3000"
+    security_opt:
+      - "no-new-privileges:true"
+
   api:
     depends_on:
       db:
@@ -93,3 +119,4 @@ services:
 volumes:
   opensearch-data:
   prometheus-data:
+  grafana-data:

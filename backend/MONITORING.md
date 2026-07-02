@@ -261,7 +261,37 @@ sum(rate(http_requests_total[1m])) by (status)
 Prometheus *scrape* `api:8080/metrics` toutes les 15 s (cf.
 [`docker/prometheus/prometheus.yml`](./docker/prometheus/prometheus.yml)) et son
 UI/PromQL est exposée sur `http://localhost:9090` (cible **Status → Targets**
-doit être `UP`). Brancher Grafana dessus pour des tableaux de bord si besoin.
+doit être `UP`).
+
+### Dashboards unifiés avec Grafana (métriques + logs)
+
+⚠️ On ne « connecte » **pas** OpenSearch et Prometheus entre eux — ce sont deux
+bases distinctes (logs vs métriques). L'outil qui les **unifie** dans des
+dashboards est **Grafana**, qui interroge chacun via sa propre *datasource* :
+
+```
+Grafana ──(datasource Prometheus, uid=prometheus)──► Prometheus  (métriques)
+        └─(datasource OpenSearch,  uid=opensearch )──► OpenSearch  (logs)
+```
+
+L'overlay `docker-compose.observability.yml` inclut un service **grafana** avec
+provisionnement automatique (aucune config manuelle) :
+
+- **datasources** : [`docker/grafana/provisioning/datasources/datasources.yml`](./docker/grafana/provisioning/datasources/datasources.yml)
+  — Prometheus (`http://prometheus:9090`) + OpenSearch (`http://opensearch:9200`,
+  index `api-logs-*`, `timeField=@timestamp`). La datasource OpenSearch nécessite
+  le plugin `grafana-opensearch-datasource`, installé au démarrage via
+  `GF_INSTALL_PLUGINS` (donc **accès réseau requis** au 1er lancement) ;
+- **dashboard de départ** : [`docker/grafana/dashboards/api-overview.json`](./docker/grafana/dashboards/api-overview.json)
+  (dossier « WebSiteBase ») : requêtes/s par statut, taux d'erreur 5xx, latence
+  p95 par route (Prometheus) + panneau « Logs d'erreur » (OpenSearch).
+
+Accès : **http://localhost:3001** (admin / admin en dev). Pour corréler une
+requête, ouvrir **Explore → OpenSearch** et filtrer `request_id:"<id>"`.
+
+> Grafana **complète** les UIs natives : Prometheus (`:9090`) pour PromQL brut,
+> OpenSearch Dashboards (`:5601`) pour l'exploration fine des logs, Grafana
+> (`:3001`) pour des tableaux de bord mêlant les deux.
 
 > Le endpoint `/metrics` ne contient que des agrégats (aucune donnée sensible),
 > mais reste à **restreindre au niveau réseau** (scrape interne) — ne pas
