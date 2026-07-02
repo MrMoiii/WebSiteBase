@@ -1,0 +1,24 @@
+# =============================================================================
+# Configuration OpenSearch Dashboards (le « panneau » de monitoring/debug).
+#
+# Se connecte au cluster en TLS (validation par la CA locale). En dev, l'UI
+# elle-même est servie en HTTP sur localhost:5601 (pas d'exposition publique) ;
+# en production, placer Dashboards derrière un reverse proxy TLS + SSO.
+# =============================================================================
+
+server.host: "0.0.0.0"
+server.name: websitebase-dashboards
+
+# Connexion TLS au cluster (le nom 'opensearch' figure dans le SAN du cert).
+opensearch.hosts: ["https://opensearch:9200"]
+opensearch.ssl.verificationMode: full
+opensearch.ssl.certificateAuthorities:
+  - "/usr/share/opensearch-dashboards/config/certs/ca.pem"
+
+# Identifiants de service (dev : admin). En prod : utilisateur dédié à moindre
+# privilège, secret managé — jamais en clair dans ce fichier.
+opensearch.username: "admin"
+opensearch.password: "Dev_Strong_Passw0rd!"
+
+# Pas de multi-tenant Dashboards pour ce panneau interne.
+opensearch_security.multitenancy.enabled: false

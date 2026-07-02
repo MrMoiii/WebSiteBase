@@ -9,6 +9,7 @@ introduite via une *pull request* dédiée vers `main`.
 |---|---|---|
 | Backend (API REST Rust/Axum sécurisée) | [`backend/`](./backend) | en cours d'intégration (PR) |
 | Frontend (Next.js/TypeScript sécurisé, pattern BFF) | [`frontend/`](./frontend) | en cours d'intégration (PR) |
+| Monitoring d'API (OpenSearch + Dashboards, optionnel) | [`backend/MONITORING.md`](./backend/MONITORING.md) | brique dédiée (branche `opensearch`) |
 
 ## Démarrage rapide (stack complète)
 

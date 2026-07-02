@@ -18,9 +18,10 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{admin, auth, health, users};
+use crate::handlers::{admin, auth, health, metrics, users};
 use crate::middleware::client::RateLimitKeyExtractor;
 use crate::middleware::security_headers::SECURITY_HEADERS;
+use crate::monitoring::layer::record_requests;
 use crate::state::AppState;
 
 /// En-tête portant le correlation id propagé dans les logs et les réponses.
@@ -29,6 +30,9 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Assemble le routeur complet à partir de l'état applicatif.
 pub fn build_router(state: AppState) -> Router {
     let config = state.config.clone();
+    // Clone destiné au middleware de monitoring (l'original est consommé par
+    // `with_state`). Clone bon marché : Arc<Config> + Sender mpsc + PgPool.
+    let state_for_monitoring = state.clone();
 
     // --- Rate limiting des endpoints sensibles (login/register) -------------
     // Clé = IP cliente de CONFIANCE (cf. RateLimitKeyExtractor), déterminée en
@@ -66,6 +70,8 @@ pub fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/health", get(health::liveness))
         .route("/health/ready", get(health::readiness))
+        // Exposition Prometheus (scrape interne). Pas d'auth, agrégats seulement.
+        .route("/metrics", get(metrics::metrics))
         .nest("/api/v1", api_routes)
         // Toute route inconnue => 404 JSON générique (pas de fuite de structure).
         .fallback(handler_404)
@@ -92,6 +98,14 @@ pub fn build_router(state: AppState) -> Router {
             .layer(SetRequestIdLayer::new(
                 header::HeaderName::from_static(REQUEST_ID_HEADER),
                 MakeRequestUuid,
+            ))
+            // 2bis. Monitoring : capture l'issue de chaque requête (succès/erreur)
+            //       et l'envoie à OpenSearch (non bloquant). Placé ici pour voir
+            //       le correlation id (posé ci-dessus) ET les statuts générés par
+            //       les couches métier en aval (timeout 408, limite 413, 500…).
+            .layer(axum::middleware::from_fn_with_state(
+                state_for_monitoring,
+                record_requests,
             ))
             // 3. Trace chaque requête dans un span incluant le correlation id.
             .layer(

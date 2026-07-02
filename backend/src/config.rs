@@ -68,6 +68,163 @@ pub struct Config {
     pub login_lockout: Duration,
 
     pub log_filter: String,
+
+    /// Configuration du monitoring d'API via OpenSearch (observabilité).
+    ///
+    /// `None` = monitoring désactivé : l'application fonctionne normalement,
+    /// aucun log n'est envoyé. *Opt-in* : sans `OPENSEARCH_URL`, rien n'est
+    /// monté (pas d'impact si le cluster n'est pas provisionné).
+    pub monitoring: Option<MonitoringConfig>,
+}
+
+/// Mode d'authentification du backend AUPRÈS d'OpenSearch.
+///
+/// Aucun de ces secrets n'atteint jamais le frontend (le navigateur ne connaît
+/// ni l'URL ni les credentials du cluster). Ils restent côté serveur.
+#[derive(Clone)]
+pub enum OpenSearchAuth {
+    /// HTTP Basic (`user` + mot de passe). Le mot de passe est un [`Secret`].
+    Basic { username: String, password: Secret },
+    /// En-tête `Authorization: ApiKey <base64>` (clé d'API OpenSearch).
+    ApiKey(Secret),
+}
+
+impl fmt::Debug for OpenSearchAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Ne jamais divulguer le secret, même via Debug.
+        match self {
+            OpenSearchAuth::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"***redacted***")
+                .finish(),
+            OpenSearchAuth::ApiKey(_) => f.write_str("ApiKey(***redacted***)"),
+        }
+    }
+}
+
+/// Configuration validée du monitoring d'API.
+#[derive(Debug, Clone)]
+pub struct MonitoringConfig {
+    /// URL de base du cluster (DOIT être en `https://` : TLS obligatoire).
+    pub base_url: String,
+    /// Authentification backend ↔ OpenSearch.
+    pub auth: OpenSearchAuth,
+    /// Certificat CA (PEM) de confiance pour un cluster à CA privée (TLS
+    /// interne). Si absent, on s'appuie sur le magasin de racines système.
+    pub ca_cert_path: Option<String>,
+    /// Identité client (PEM concaténé cert+clé) pour le mTLS. Optionnelle.
+    pub client_identity_path: Option<String>,
+    /// Préfixe des index quotidiens de logs (ex. `api-logs` → `api-logs-YYYY.MM.DD`).
+    pub index_prefix: String,
+    /// Timeout des appels sortants vers OpenSearch.
+    pub request_timeout: Duration,
+    /// Taille de lot maximale avant envoi `_bulk`.
+    pub batch_size: usize,
+    /// Intervalle de vidange périodique du tampon.
+    pub flush_interval: Duration,
+    /// Capacité du canal interne (au-delà, les events sont abandonnés, jamais
+    /// de contre-pression sur le chemin de requête).
+    pub channel_capacity: usize,
+}
+
+impl MonitoringConfig {
+    /// Construit la config de monitoring depuis l'environnement.
+    ///
+    /// Désactivé (`Ok(None)`) si `OPENSEARCH_URL` est absent. Si présent,
+    /// l'URL DOIT être en HTTPS et une méthode d'auth doit être fournie, sinon
+    /// le démarrage échoue (fail-fast : jamais d'envoi non sécurisé).
+    pub fn from_env() -> Result<Option<Self>, ConfigError> {
+        let base_url = match std::env::var("OPENSEARCH_URL") {
+            Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+            _ => return Ok(None),
+        };
+
+        let base_url = base_url.trim_end_matches('/').to_string();
+
+        // TLS obligatoire par défaut. Le `http://` n'est toléré qu'en DEV
+        // explicite (`OPENSEARCH_ALLOW_INSECURE=true`), pour un cluster sur
+        // réseau interne non exposé. En production, toute URL non-https est
+        // refusée au démarrage (fail-fast).
+        let allow_insecure = opt_parse::<bool>("OPENSEARCH_ALLOW_INSECURE", false)?;
+        let scheme_ok =
+            base_url.starts_with("https://") || (base_url.starts_with("http://") && allow_insecure);
+        if !scheme_ok {
+            return Err(ConfigError::Invalid {
+                name: "OPENSEARCH_URL",
+                reason: "doit utiliser https:// (TLS obligatoire) ; pour du http \
+                         en dev sur réseau interne, poser OPENSEARCH_ALLOW_INSECURE=true"
+                    .to_string(),
+            });
+        }
+
+        // Auth : ApiKey prioritaire si fournie, sinon Basic (user + password).
+        let auth = if let Ok(key) = std::env::var("OPENSEARCH_API_KEY") {
+            if key.trim().is_empty() {
+                return Err(ConfigError::Invalid {
+                    name: "OPENSEARCH_API_KEY",
+                    reason: "valeur vide".to_string(),
+                });
+            }
+            OpenSearchAuth::ApiKey(Secret(key))
+        } else {
+            let username = require("OPENSEARCH_USERNAME")?;
+            let password = Secret(require("OPENSEARCH_PASSWORD")?);
+            OpenSearchAuth::Basic { username, password }
+        };
+
+        let ca_cert_path = opt_string("OPENSEARCH_CA_CERT_PATH");
+        let client_identity_path = opt_string("OPENSEARCH_CLIENT_IDENTITY_PATH");
+
+        let index_prefix = std::env::var("OPENSEARCH_INDEX_PREFIX")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "api-logs".to_string());
+        // Le préfixe sert à nommer des index : on le contraint strictement.
+        if !is_valid_index_token(&index_prefix) {
+            return Err(ConfigError::Invalid {
+                name: "OPENSEARCH_INDEX_PREFIX",
+                reason: "caractères autorisés : [a-z0-9_-], 1..=64".to_string(),
+            });
+        }
+
+        let request_timeout =
+            Duration::from_secs(opt_parse::<u64>("OPENSEARCH_TIMEOUT_SECONDS", 5)?);
+        let batch_size = opt_parse::<usize>("OPENSEARCH_BATCH_SIZE", 500)?.max(1);
+        let flush_interval =
+            Duration::from_secs(opt_parse::<u64>("OPENSEARCH_FLUSH_INTERVAL_SECONDS", 2)?.max(1));
+        let channel_capacity = opt_parse::<usize>("OPENSEARCH_CHANNEL_CAPACITY", 10_000)?.max(1);
+
+        Ok(Some(MonitoringConfig {
+            base_url,
+            auth,
+            ca_cert_path,
+            client_identity_path,
+            index_prefix,
+            request_timeout,
+            batch_size,
+            flush_interval,
+            channel_capacity,
+        }))
+    }
+}
+
+/// Valide un jeton d'index OpenSearch : minuscules, chiffres, `_` et `-`,
+/// longueur 1..=64. Le premier caractère DOIT être alphanumérique : OpenSearch
+/// interdit les noms d'index commençant par `_`, `-` ou `+` (collision avec les
+/// index/API internes). Empêche l'injection de caractères spéciaux dans un nom
+/// d'index dérivé de la configuration.
+pub fn is_valid_index_token(s: &str) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    let mut bytes = s.bytes();
+    let first = bytes.next().expect("non-empty checked above");
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
+    }
+    bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 impl Config {
@@ -116,6 +273,8 @@ impl Config {
 
         let log_filter = std::env::var("LOG_FILTER").unwrap_or_else(|_| "info".to_string());
 
+        let monitoring = MonitoringConfig::from_env()?;
+
         Ok(Self {
             bind_addr,
             trusted_proxy_hops,
@@ -132,6 +291,7 @@ impl Config {
             login_max_failed_attempts,
             login_lockout,
             log_filter,
+            monitoring,
         })
     }
 }
@@ -157,6 +317,8 @@ impl Config {
             login_max_failed_attempts: 5,
             login_lockout: Duration::from_secs(900),
             log_filter: "warn".to_string(),
+            // Monitoring désactivé par défaut en test (aucun envoi).
+            monitoring: None,
         }
     }
 }
@@ -167,6 +329,14 @@ fn require(name: &'static str) -> Result<String, ConfigError> {
         Ok(v) if !v.trim().is_empty() => Ok(v),
         _ => Err(ConfigError::Missing(name)),
     }
+}
+
+/// Récupère une variable optionnelle non vide (chaîne brute), ou `None`.
+fn opt_string(name: &'static str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Récupère et parse une variable obligatoire.

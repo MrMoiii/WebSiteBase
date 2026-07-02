@@ -54,7 +54,7 @@ impl FromRequestParts<AppState> for ClientContext {
 }
 
 /// IP du pair TCP (le proxy de confiance le plus proche, en principe).
-fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
+pub fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
     extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())

@@ -53,6 +53,13 @@ pub enum ApiError {
     Internal(String),
 }
 
+/// Code d'erreur applicatif stable, attaché aux réponses d'erreur en extension.
+///
+/// Permet à des couches en aval (ex. middleware de monitoring) de connaître le
+/// code sans re-parser le corps JSON. Sûr à indexer (pas de donnée sensible).
+#[derive(Debug, Clone, Copy)]
+pub struct ErrorCode(pub &'static str);
+
 impl ApiError {
     /// Status HTTP associé.
     fn status(&self) -> StatusCode {
@@ -147,14 +154,18 @@ impl IntoResponse for ApiError {
             }
         }
 
+        let code = self.code();
         let body = ErrorBody {
             error: ErrorDetail {
-                code: self.code(),
+                code,
                 message: self.public_message(),
             },
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        // Expose le code aux couches en aval (monitoring) sans re-parser le corps.
+        response.extensions_mut().insert(ErrorCode(code));
+        response
     }
 }
 

@@ -1,0 +1,39 @@
+# =============================================================================
+# Datasources Grafana provisionnées (DÉVELOPPEMENT).
+#
+# Grafana est l'outil qui UNIFIE les deux sources d'observabilité :
+#   - Prometheus  -> métriques (séries temporelles : latence, taux d'erreur…) ;
+#   - OpenSearch  -> logs (access + events, corrélés par request_id).
+# On ne connecte pas OpenSearch et Prometheus entre eux : Grafana interroge
+# chacun via sa datasource.
+# =============================================================================
+apiVersion: 1
+
+# Datasources supprimées au reprovisioning (idempotence).
+deleteDatasources:
+  - { name: Prometheus, orgId: 1 }
+  - { name: OpenSearch, orgId: 1 }
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+
+  # Nécessite le plugin `grafana-opensearch-datasource` (installé via
+  # GF_INSTALL_PLUGINS dans le compose). Cluster de dev sans TLS ni auth.
+  - name: OpenSearch
+    uid: opensearch
+    type: grafana-opensearch-datasource
+    access: proxy
+    url: http://opensearch:9200
+    jsonData:
+      flavor: OpenSearch
+      version: 2.19.0
+      database: "api-logs-*"
+      timeField: "@timestamp"
+      pplEnabled: true

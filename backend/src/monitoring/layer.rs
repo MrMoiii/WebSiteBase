@@ -1,0 +1,97 @@
+//! Middleware Axum capturant l'issue de CHAQUE requête (succès/erreur) pour
+//! alimenter les métriques Prometheus et le monitoring OpenSearch.
+//!
+//! Placement (cf. `routes`) : à l'intérieur du `SetRequestIdLayer` (pour lire
+//! le correlation id) mais à l'extérieur des couches métier (timeout, CORS,
+//! limites…), afin de capturer aussi les 408/413/500 générés par la pile.
+//!
+//! Strictement NON BLOQUANT : métriques en mémoire (verrou bref) + `record()`
+//! best-effort vers OpenSearch ; aucune attente réseau sur le chemin de requête.
+
+use std::time::Instant;
+
+use axum::extract::{Request, State};
+use axum::http::header::USER_AGENT;
+use axum::middleware::Next;
+use axum::response::Response;
+use time::OffsetDateTime;
+
+use crate::errors::ErrorCode;
+use crate::middleware::client::{client_ip, peer_ip};
+use crate::state::AppState;
+
+use super::event::access_log;
+
+/// Correlation id par défaut si l'en-tête est absent (ne devrait pas arriver).
+const UNKNOWN: &str = "unknown";
+
+/// Chemin du scrape Prometheus : exclu des métriques et des logs (auto-bruit).
+const METRICS_PATH: &str = "/metrics";
+
+/// Middleware `from_fn_with_state` : métriques + log d'accès par requête.
+pub async fn record_requests(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Métadonnées extraites AVANT de céder la requête (pas de query string).
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(UNKNOWN)
+        .to_owned();
+    let user_agent = request
+        .headers()
+        .get(USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        // Borne la longueur (évite un UA géant dans l'index).
+        .map(|s| s.chars().take(256).collect::<String>());
+    // IP cliente de CONFIANCE (résistante à l'usurpation XFF), via l'API
+    // partagée avec le rate limiting (cf. middleware::client).
+    let peer = peer_ip(request.extensions());
+    let client_ip = client_ip(request.headers(), peer, state.config.trusted_proxy_hops)
+        .map(|ip| ip.to_string());
+
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = started.elapsed();
+
+    // On n'instrumente pas le endpoint de scrape lui-même (sinon Prometheus
+    // pollue ses propres métriques et le journal OpenSearch à chaque scrape).
+    if path == METRICS_PATH {
+        return response;
+    }
+
+    let status = response.status().as_u16();
+
+    // 1) Métriques Prometheus (toujours actives, en mémoire).
+    state
+        .metrics
+        .observe_request(&method, &path, status, elapsed.as_secs_f64());
+
+    // 2) Log d'accès vers OpenSearch (si le monitoring est configuré).
+    if let Some(handle) = &state.monitoring {
+        // Code d'erreur applicatif stable, attaché par `ApiError` en extension.
+        let error_code = response
+            .extensions()
+            .get::<ErrorCode>()
+            .map(|c| c.0.to_owned());
+
+        handle.record(access_log(
+            OffsetDateTime::now_utc(),
+            request_id,
+            method,
+            path,
+            status,
+            elapsed.as_millis() as u64,
+            error_code,
+            client_ip,
+            user_agent,
+        ));
+    }
+
+    response
+}

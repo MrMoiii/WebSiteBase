@@ -1,0 +1,17 @@
+# =============================================================================
+# Provider de dashboards Grafana : charge les dashboards JSON déposés dans
+# /var/lib/grafana/dashboards (montés en lecture seule depuis le dépôt).
+# =============================================================================
+apiVersion: 1
+
+providers:
+  - name: WebSiteBase
+    orgId: 1
+    folder: WebSiteBase
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

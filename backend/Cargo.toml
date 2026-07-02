@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 # --- Runtime asynchrone ---
-tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
 
 # --- Framework HTTP ---
 axum = { version = "0.8.1", features = ["macros", "json", "query"] }
@@ -28,6 +28,15 @@ tower-http = { version = "0.6.2", features = [
     "catch-panic",
 ] }
 tower_governor = "0.7.0"
+
+# --- Client HTTP sortant (uniquement backend -> OpenSearch) ---
+# rustls-tls : TLS sans OpenSSL système (chaîne d'appro minimale, cohérente avec
+# sqlx tls-rustls). Aucune feature `default` (pas de native-tls). Ce client est
+# le SEUL chemin vers OpenSearch : le frontend ne l'atteint jamais directement.
+reqwest = { version = "0.12.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 
 # --- Base de données ---
 sqlx = { version = "0.8.3", default-features = false, features = [
