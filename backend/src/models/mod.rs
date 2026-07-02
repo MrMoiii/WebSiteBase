@@ -2,4 +2,5 @@
 
 pub mod auth;
 pub mod pagination;
+pub mod session;
 pub mod user;

@@ -10,6 +10,9 @@ logs **JSON structurés** (tracing).
 > Voir [`MONITORING.md`](./MONITORING.md) pour le **monitoring d'API via
 > OpenSearch** (optionnel) : observabilité des appels (succès/erreurs) pour le
 > debug, envoi non bloquant, panneau OpenSearch Dashboards, TLS et tests.
+> Voir [`SESSIONS.md`](./SESSIONS.md) pour les **sessions Redis** (source de
+> vérité) : rotation atomique, révocation immédiate des access tokens (`sid`),
+> gestion des sessions actives, cookies, et lockout/rate-limiting distribués.
 
 ## Sommaire
 
@@ -40,6 +43,7 @@ backend/
 │   ├── models/            # DTO validés (serde + garde) et vues
 │   ├── middleware/        # en-têtes sécurité, auth, contexte client, validation
 │   ├── handlers/          # logique des endpoints
+│   ├── session/           # store de sessions Redis (source de vérité)
 │   ├── monitoring/        # monitoring d'API -> OpenSearch (client TLS, shipper, layer)
 │   └── routes/            # assemblage du routeur + pile de middlewares
 ├── migrations/            # migrations SQL versionnées (sqlx)
@@ -70,6 +74,9 @@ Copier ce fichier en `.env` pour le développement local.
 | `DATABASE_URL` | ✅ | — | URL runtime (rôle **DML-only**). |
 | `DATABASE_MIGRATION_URL` | (migrations) | — | URL des migrations (rôle propriétaire, DDL). |
 | `DATABASE_MAX_CONNECTIONS` | | `10` | Taille du pool. |
+| `REDIS_URL` | ✅ | — | Store de sessions (`redis://` / `rediss://`). Voir [`SESSIONS.md`](./SESSIONS.md). |
+| `SESSION_ABSOLUTE_TTL_SECONDS` | | `2592000` | Plafond absolu de session (30 j). |
+| `AUTH_RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_WINDOW_SECONDS` | | `30` / `60` | Rate limiting d'auth distribué (par IP). |
 | `JWT_SECRET` | ✅ | — | Secret HS256, **≥ 32 octets** (sinon refus au démarrage). |
 | `JWT_ISSUER` | ✅ | — | Émetteur attendu (`iss`). |
 | `JWT_ACCESS_TTL_SECONDS` | | `900` | Durée du token d'accès. |
@@ -146,11 +153,13 @@ cargo sqlx prepare --database-url "$DATABASE_MIGRATION_URL"
 
 ## Tests
 
-Les tests d'intégration nécessitent une base accessible via `DATABASE_URL`.
+Les tests d'intégration nécessitent une base accessible via `DATABASE_URL`
+**et** un Redis via `REDIS_URL` (store de sessions).
 
 ```bash
 cd backend
 export DATABASE_URL="postgres://app_user:app_dev_pw@localhost:5432/websitebase"
+export REDIS_URL="redis://localhost:6379"
 cargo test
 ```
 
@@ -207,6 +216,9 @@ Un correlation id est renvoyé dans l'en-tête `x-request-id`.
 | `POST` | `/api/v1/auth/logout` | cookie | Révocation du refresh token. |
 | `GET` | `/api/v1/users/me` | Bearer | Lecture de son profil. |
 | `PATCH` | `/api/v1/users/me` | Bearer | Mise à jour de son profil. |
+| `GET` | `/api/v1/users/me/sessions` | Bearer | Liste ses sessions actives. Voir [`SESSIONS.md`](./SESSIONS.md). |
+| `DELETE` | `/api/v1/users/me/sessions/{sid}` | Bearer | Révoque une de ses sessions. |
+| `POST` | `/api/v1/users/me/sessions/logout-others` | Bearer | Révoque ses autres sessions. |
 | `GET` | `/api/v1/admin/users` | Bearer (admin) | Liste paginée des utilisateurs. |
 
 > **Monitoring d'API** : aucun endpoint dédié — chaque requête est observée par

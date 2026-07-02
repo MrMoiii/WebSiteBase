@@ -10,11 +10,12 @@ introduite via une *pull request* dédiée vers `main`.
 | Backend (API REST Rust/Axum sécurisée) | [`backend/`](./backend) | en cours d'intégration (PR) |
 | Frontend (Next.js/TypeScript sécurisé, pattern BFF) | [`frontend/`](./frontend) | en cours d'intégration (PR) |
 | Monitoring d'API (OpenSearch + Dashboards, optionnel) | [`backend/MONITORING.md`](./backend/MONITORING.md) | brique dédiée (branche `opensearch`) |
+| Sessions Redis (source de vérité, révocation immédiate, cookies) | [`backend/SESSIONS.md`](./backend/SESSIONS.md) | brique dédiée (branche `redis`) |
 
 ## Démarrage rapide (stack complète)
 
 ```bash
-cd backend && docker compose up -d --build   # API + PostgreSQL
+cd backend && docker compose up -d --build   # API + PostgreSQL + Redis
 cd ../frontend && docker compose up --build  # frontend sur http://localhost:3000
 ```
 
