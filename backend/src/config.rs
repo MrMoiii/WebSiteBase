@@ -69,12 +69,62 @@ pub struct Config {
 
     pub log_filter: String,
 
+    /// Store de sessions Redis (source de vérité des sessions/refresh tokens).
+    /// OBLIGATOIRE : l'authentification en dépend (fail-fast au démarrage).
+    pub redis: RedisConfig,
+
     /// Configuration du monitoring d'API via OpenSearch (observabilité).
     ///
     /// `None` = monitoring désactivé : l'application fonctionne normalement,
     /// aucun log n'est envoyé. *Opt-in* : sans `OPENSEARCH_URL`, rien n'est
     /// monté (pas d'impact si le cluster n'est pas provisionné).
     pub monitoring: Option<MonitoringConfig>,
+}
+
+/// Configuration du store de sessions Redis.
+///
+/// Redis est la **source de vérité** des sessions : refresh tokens (rotation +
+/// TTL natif), liaison des access tokens à un `sid` (révocation immédiate),
+/// verrouillage anti-bruteforce et rate limiting distribués.
+#[derive(Debug, Clone)]
+pub struct RedisConfig {
+    /// URL de connexion (`redis://` ou `rediss://` pour TLS). Secret (peut
+    /// contenir un mot de passe) : caviardé en `Debug`.
+    pub url: Secret,
+    /// Durée de vie ABSOLUE d'une session (plafond dur, non prolongeable). Au
+    /// delà, une nouvelle authentification est exigée même si la session est
+    /// restée active. Le TTL glissant (idle) réutilise `refresh_ttl`.
+    pub session_absolute_ttl: Duration,
+    /// Nombre maximal de requêtes d'auth par fenêtre et par IP (rate limiting
+    /// distribué, complémentaire du `tower_governor` en mémoire).
+    pub auth_rate_limit_max: u32,
+    /// Fenêtre du rate limiting d'auth.
+    pub auth_rate_limit_window: Duration,
+}
+
+impl RedisConfig {
+    /// Charge la configuration Redis depuis l'environnement (fail-fast).
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let url = Secret(require("REDIS_URL")?);
+        let raw = url.expose();
+        if !(raw.starts_with("redis://") || raw.starts_with("rediss://")) {
+            return Err(ConfigError::Invalid {
+                name: "REDIS_URL",
+                reason: "doit commencer par redis:// ou rediss:// (TLS)".to_string(),
+            });
+        }
+        let session_absolute_ttl =
+            Duration::from_secs(opt_parse::<u64>("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)?);
+        let auth_rate_limit_max = opt_parse::<u32>("AUTH_RATE_LIMIT_MAX", 30)?.max(1);
+        let auth_rate_limit_window =
+            Duration::from_secs(opt_parse::<u64>("AUTH_RATE_LIMIT_WINDOW_SECONDS", 60)?.max(1));
+        Ok(Self {
+            url,
+            session_absolute_ttl,
+            auth_rate_limit_max,
+            auth_rate_limit_window,
+        })
+    }
 }
 
 /// Mode d'authentification du backend AUPRÈS d'OpenSearch.
@@ -273,6 +323,7 @@ impl Config {
 
         let log_filter = std::env::var("LOG_FILTER").unwrap_or_else(|_| "info".to_string());
 
+        let redis = RedisConfig::from_env()?;
         let monitoring = MonitoringConfig::from_env()?;
 
         Ok(Self {
@@ -291,6 +342,7 @@ impl Config {
             login_max_failed_attempts,
             login_lockout,
             log_filter,
+            redis,
             monitoring,
         })
     }
@@ -317,6 +369,17 @@ impl Config {
             login_max_failed_attempts: 5,
             login_lockout: Duration::from_secs(900),
             log_filter: "warn".to_string(),
+            redis: RedisConfig {
+                // Les tests d'intégration fournissent un Redis via REDIS_URL
+                // (défaut : instance locale). Non contacté par les tests unitaires.
+                url: Secret::new(
+                    std::env::var("REDIS_URL")
+                        .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+                ),
+                session_absolute_ttl: Duration::from_secs(2_592_000),
+                auth_rate_limit_max: 1000,
+                auth_rate_limit_window: Duration::from_secs(60),
+            },
             // Monitoring désactivé par défaut en test (aucun envoi).
             monitoring: None,
         }

@@ -62,9 +62,20 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Store de sessions Redis (source de vérité) — requis par les tests d'auth.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       MIGRATION_URL: postgres://app_owner:owner_dev_pw@localhost:5432/websitebase
       DATABASE_URL: postgres://app_user:app_dev_pw@localhost:5432/websitebase
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

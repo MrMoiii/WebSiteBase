@@ -80,6 +80,16 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Store de sessions Redis (source de vérité) — requis par le backend.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       API_BASE_URL: http://localhost:8080
       SESSION_SECRET: ci_e2e_session_secret_at_least_32_chars
@@ -115,6 +125,7 @@ jobs:
           APP_BIND_ADDR: 0.0.0.0:8080
           APP_TRUSTED_PROXY_HOPS: "1"
           DATABASE_URL: postgres://app_user:app_dev_pw@localhost:5432/websitebase
+          REDIS_URL: redis://localhost:6379
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_bytes_long
           JWT_ISSUER: websitebase
           CORS_ALLOWED_ORIGINS: http://localhost:3000

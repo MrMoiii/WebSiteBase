@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use websitebase_backend::config::Config;
+use websitebase_backend::session::SessionStore;
 use websitebase_backend::state::AppState;
 use websitebase_backend::{db, routes};
 
@@ -40,7 +41,13 @@ async fn spawn_app() -> TestApp {
     let pool = db::create_pool(&config)
         .await
         .expect("connexion à la base de test");
-    let state = AppState::new(config, pool.clone());
+    // Store de sessions Redis (source de vérité) — requis pour l'auth. Les tests
+    // d'intégration nécessitent donc un Redis accessible via REDIS_URL (fourni
+    // par la CI ; défaut localhost:6379).
+    let session = SessionStore::connect(&config.redis, config.refresh_ttl)
+        .await
+        .expect("connexion au Redis de test");
+    let state = AppState::new(config, pool.clone(), session);
     let app = routes::build_router(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -359,6 +366,124 @@ async fn pagination_rejects_out_of_range() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// --- Sessions Redis (source de vérité) --------------------------------------
+// NB : ces tests nécessitent Redis ET PostgreSQL (fournis par la CI).
+
+#[tokio::test]
+async fn logout_revokes_access_token_immediately() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+
+    // Le token d'accès fonctionne tant que la session existe.
+    let resp = c
+        .get(app.url("/api/v1/users/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Logout : la session (sid) est supprimée de Redis.
+    let resp = c.post(app.url("/api/v1/auth/logout")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Le MÊME token d'accès (non expiré) est désormais rejeté : révocation
+    // immédiate via la vérification de session dans Redis.
+    let resp = c
+        .get(app.url("/api/v1/users/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn sessions_list_shows_current() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+
+    let resp = c
+        .get(app.url("/api/v1/users/me/sessions"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["current"], true);
+}
+
+#[tokio::test]
+async fn revoke_unknown_session_is_not_found() {
+    let app = spawn_app().await;
+    let (c, _, token) = register_user(&app).await;
+    let unknown = Uuid::new_v4();
+    let resp = c
+        .delete(app.url(&format!("/api/v1/users/me/sessions/{unknown}")))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn logout_others_keeps_current_and_revokes_the_rest() {
+    let app = spawn_app().await;
+    // Session 1 (client c1) + un compte.
+    let (c1, email, token1) = register_user(&app).await;
+
+    // Session 2 (client c2) pour le MÊME utilisateur.
+    let c2 = client();
+    let resp = c2
+        .post(app.url("/api/v1/auth/login"))
+        .json(&json!({ "email": email, "password": "a-strong-password-123" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let token2 = resp.json::<Value>().await.unwrap()["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Depuis la session 1 : déconnexion des AUTRES sessions.
+    let resp = c1
+        .post(app.url("/api/v1/users/me/sessions/logout-others"))
+        .bearer_auth(&token1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.json::<Value>().await.unwrap()["revoked_sessions"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+
+    // La session courante (1) reste valide…
+    let resp = c1
+        .get(app.url("/api/v1/users/me"))
+        .bearer_auth(&token1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // …tandis que la session 2 est révoquée immédiatement.
+    let resp = c2
+        .get(app.url("/api/v1/users/me"))
+        .bearer_auth(&token2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

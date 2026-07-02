@@ -32,6 +32,10 @@ pub struct AccessClaims {
     pub exp: i64,
     /// Identifiant unique du token (utile pour l'audit / révocation future).
     pub jti: Uuid,
+    /// Identifiant de la SESSION (stable à travers les rotations de refresh
+    /// token). Vérifié dans Redis à chaque requête : si la session est révoquée,
+    /// le token d'accès est immédiatement invalide (révocation instantanée).
+    pub sid: Uuid,
     /// Type de token, fixé à "access" pour empêcher la confusion de tokens.
     pub typ: String,
 }
@@ -43,6 +47,7 @@ pub fn issue_access_token(
     config: &Config,
     user_id: Uuid,
     role: UserRole,
+    session_id: Uuid,
 ) -> Result<String, ApiError> {
     let now = OffsetDateTime::now_utc();
     let exp = now + config.jwt_access_ttl;
@@ -54,6 +59,7 @@ pub fn issue_access_token(
         iat: now.unix_timestamp(),
         exp: exp.unix_timestamp(),
         jti: Uuid::new_v4(),
+        sid: session_id,
         typ: ACCESS_TOKEN_TYPE.to_string(),
     };
 
@@ -103,9 +109,11 @@ mod tests {
     fn issue_then_verify_roundtrip() {
         let config = cfg();
         let uid = Uuid::new_v4();
-        let token = issue_access_token(&config, uid, UserRole::User).unwrap();
+        let sid = Uuid::new_v4();
+        let token = issue_access_token(&config, uid, UserRole::User, sid).unwrap();
         let claims = verify_access_token(&config, &token).unwrap();
         assert_eq!(claims.sub, uid);
+        assert_eq!(claims.sid, sid);
         assert_eq!(claims.role, UserRole::User);
         assert_eq!(claims.typ, "access");
         assert_eq!(claims.iss, config.jwt_issuer);
@@ -114,7 +122,8 @@ mod tests {
     #[test]
     fn rejects_tampered_token() {
         let config = cfg();
-        let token = issue_access_token(&config, Uuid::new_v4(), UserRole::Admin).unwrap();
+        let token =
+            issue_access_token(&config, Uuid::new_v4(), UserRole::Admin, Uuid::new_v4()).unwrap();
         // Modifie un caractère de la signature.
         let mut bytes: Vec<char> = token.chars().collect();
         let last = bytes.len() - 1;
@@ -126,7 +135,8 @@ mod tests {
     #[test]
     fn rejects_wrong_secret() {
         let config = cfg();
-        let token = issue_access_token(&config, Uuid::new_v4(), UserRole::User).unwrap();
+        let token =
+            issue_access_token(&config, Uuid::new_v4(), UserRole::User, Uuid::new_v4()).unwrap();
         let mut other = cfg();
         other.jwt_secret = crate::config::Secret::new("a_completely_different_secret_value_0002");
         assert!(verify_access_token(&other, &token).is_err());
@@ -135,7 +145,8 @@ mod tests {
     #[test]
     fn rejects_wrong_issuer() {
         let config = cfg();
-        let token = issue_access_token(&config, Uuid::new_v4(), UserRole::User).unwrap();
+        let token =
+            issue_access_token(&config, Uuid::new_v4(), UserRole::User, Uuid::new_v4()).unwrap();
         let mut other = cfg();
         other.jwt_issuer = "someone-else".to_string();
         assert!(verify_access_token(&other, &token).is_err());
