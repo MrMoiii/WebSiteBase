@@ -288,7 +288,7 @@ impl SessionStore {
                 ip: fields.get("ip").cloned().and_then(opt),
             });
         }
-        out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        out.sort_by_key(|s| std::cmp::Reverse(s.last_seen));
         Ok(out)
     }
 
