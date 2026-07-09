@@ -355,8 +355,16 @@ impl SessionStore {
         Ok(n.unwrap_or(0) >= max)
     }
 
-    /// Enregistre un échec de login ; fixe la fenêtre au premier échec. Renvoie
-    /// le compteur courant.
+    /// Enregistre un échec de login et (ré)arme la fenêtre. Renvoie le compteur
+    /// courant.
+    ///
+    /// `INCR` + `EXPIRE` sont émis dans un **`MULTI` atomique** : les deux
+    /// s'appliquent ensemble ou pas du tout. Sans cela, une panne entre les deux
+    /// (erreur réseau sur l'`EXPIRE`, ou crash du process) laisserait la clé
+    /// SANS TTL — verrouillant le compte DÉFINITIVEMENT une fois le seuil
+    /// atteint. Poser l'`EXPIRE` à chaque échec en fait une fenêtre glissante
+    /// (le verrou n'expire qu'après l'arrêt des tentatives), ce qui est le
+    /// comportement souhaité pour un anti-bruteforce.
     pub async fn record_login_failure(
         &self,
         user_id: &Uuid,
@@ -364,10 +372,13 @@ impl SessionStore {
     ) -> Result<i64, SessionError> {
         let mut conn = self.conn.clone();
         let key = format!("lock:{user_id}");
-        let count: i64 = conn.incr(&key, 1).await?;
-        if count == 1 {
-            let _: bool = conn.expire(&key, window.as_secs() as i64).await?;
-        }
+        let (count,): (i64,) = redis::pipe()
+            .atomic()
+            .incr(&key, 1)
+            .expire(&key, window.as_secs() as i64)
+            .ignore()
+            .query_async(&mut conn)
+            .await?;
         Ok(count)
     }
 
@@ -381,16 +392,22 @@ impl SessionStore {
     // --- Rate limiting distribué (fenêtre fixe) ----------------------------
 
     /// Autorise (ou non) une requête d'auth pour `key` (typiquement l'IP), selon
-    /// le quota configuré. Fenêtre fixe : `INCR` + `EXPIRE` au premier hit.
+    /// le quota configuré.
+    ///
+    /// `INCR` + `EXPIRE` sont émis dans un **`MULTI` atomique** (même raison que
+    /// `record_login_failure` : sans cela une clé sans TTL bloquerait l'IP à
+    /// vie). Fenêtre glissante : elle se réarme tant que le client insiste, ce
+    /// qui maintient le blocage sous rafale — le comportement voulu.
     pub async fn auth_rate_limit_ok(&self, key: &str) -> Result<bool, SessionError> {
         let mut conn = self.conn.clone();
         let rl = format!("rl:auth:{key}");
-        let count: i64 = conn.incr(&rl, 1).await?;
-        if count == 1 {
-            let _: bool = conn
-                .expire(&rl, self.auth_rl_window.as_secs() as i64)
-                .await?;
-        }
+        let (count,): (i64,) = redis::pipe()
+            .atomic()
+            .incr(&rl, 1)
+            .expire(&rl, self.auth_rl_window.as_secs() as i64)
+            .ignore()
+            .query_async(&mut conn)
+            .await?;
         Ok(count <= i64::from(self.auth_rl_max))
     }
 }
