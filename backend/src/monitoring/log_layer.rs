@@ -179,3 +179,56 @@ impl Visit for EventVisitor {
         self.put(field.name(), Value::String(format!("{value:?}")));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_routes_message_field() {
+        let mut v = EventVisitor::default();
+        v.put("message", Value::String("hello".into()));
+        assert_eq!(v.message.as_deref(), Some("hello"));
+        assert!(v.fields.is_empty()); // pas dupliqué dans les champs
+    }
+
+    #[test]
+    fn put_stringifies_non_string_message() {
+        let mut v = EventVisitor::default();
+        v.put("message", Value::Number(42.into()));
+        assert_eq!(v.message.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn put_routes_correlation_and_request_id_to_request_id() {
+        let mut v = EventVisitor::default();
+        v.put("correlation_id", Value::String("rid-1".into()));
+        assert_eq!(v.request_id.as_deref(), Some("rid-1"));
+
+        let mut v2 = EventVisitor::default();
+        v2.put("request_id", Value::String("rid-2".into()));
+        assert_eq!(v2.request_id.as_deref(), Some("rid-2"));
+        // Ni l'un ni l'autre ne pollue les champs structurés.
+        assert!(v.fields.is_empty() && v2.fields.is_empty());
+    }
+
+    #[test]
+    fn put_collects_structured_fields() {
+        let mut v = EventVisitor::default();
+        v.put("event", Value::String("login".into()));
+        v.put("security.event", Value::Bool(true));
+        v.put("http.status", Value::Number(401.into()));
+        assert_eq!(v.fields["event"], Value::String("login".into()));
+        assert_eq!(v.fields["security.event"], Value::Bool(true));
+        assert_eq!(v.fields["http.status"], Value::Number(401.into()));
+        assert!(v.message.is_none() && v.request_id.is_none());
+    }
+
+    #[test]
+    fn put_ignores_non_string_correlation_id() {
+        // Un correlation_id non-textuel n'est pas retenu comme request_id.
+        let mut v = EventVisitor::default();
+        v.put("request_id", Value::Number(7.into()));
+        assert!(v.request_id.is_none());
+    }
+}

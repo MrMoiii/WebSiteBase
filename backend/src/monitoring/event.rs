@@ -189,6 +189,72 @@ mod tests {
     }
 
     #[test]
+    fn outcome_for_class_boundaries() {
+        // Frontières exactes des classes HTTP.
+        assert_eq!(outcome_for(0), "success");
+        assert_eq!(outcome_for(199), "success");
+        assert_eq!(outcome_for(399), "success");
+        assert_eq!(outcome_for(400), "client_error");
+        assert_eq!(outcome_for(499), "client_error");
+        assert_eq!(outcome_for(500), "server_error");
+        assert_eq!(outcome_for(599), "server_error");
+        // Au-delà de 599 (codes non standard) : traité comme succès (défaut).
+        assert_eq!(outcome_for(600), "success");
+    }
+
+    #[test]
+    fn index_name_zero_pads_month_and_day() {
+        // 2026-03-07 : mois et jour à un chiffre doivent être zéro-paddés.
+        let ts = OffsetDateTime::from_unix_timestamp(1_772_841_600).unwrap();
+        assert_eq!(index_name_for("logs", ts), "logs-2026.03.07");
+    }
+
+    #[test]
+    fn base_doc_carries_kind_and_level() {
+        let d = base_doc(ts(), "event", "warn");
+        assert_eq!(d["kind"], "event");
+        assert_eq!(d["level"], "warn");
+        assert!(d.get("@timestamp").is_some());
+    }
+
+    #[test]
+    fn access_log_omits_absent_optional_fields() {
+        let d = access_log(
+            ts(),
+            "r".into(),
+            "GET".into(),
+            "/x".into(),
+            200,
+            1,
+            None,
+            None,
+            None,
+        );
+        assert!(d.body.get("error_code").is_none());
+        assert!(d.body.get("client_ip").is_none());
+        assert!(d.body.get("user_agent").is_none());
+        // Les champs obligatoires restent présents.
+        assert_eq!(d.body["outcome"], "success");
+        assert_eq!(d.body["status"], 200);
+    }
+
+    #[test]
+    fn empty_docs_produce_empty_ndjson() {
+        assert_eq!(to_bulk_ndjson(&[], "api-logs"), "");
+    }
+
+    #[test]
+    fn index_template_targets_prefix_pattern() {
+        let tpl = index_template("api-logs");
+        assert_eq!(tpl["index_patterns"][0], "api-logs-*");
+        assert_eq!(tpl["template"]["mappings"]["dynamic"], true);
+        assert_eq!(
+            tpl["template"]["mappings"]["properties"]["request_id"]["type"],
+            "keyword"
+        );
+    }
+
+    #[test]
     fn bulk_ndjson_pairs_action_and_source() {
         let docs = vec![
             access_log(

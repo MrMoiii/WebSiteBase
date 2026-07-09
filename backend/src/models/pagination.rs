@@ -83,4 +83,94 @@ mod tests {
         };
         assert_eq!(q.offset(), i64::MAX);
     }
+
+    #[test]
+    fn accessors_apply_defaults_and_overrides() {
+        let default = PaginationQuery {
+            page: None,
+            page_size: None,
+        };
+        assert_eq!(default.page(), 1);
+        assert_eq!(default.page_size(), 20);
+
+        let custom = PaginationQuery {
+            page: Some(5),
+            page_size: Some(50),
+        };
+        assert_eq!(custom.page(), 5);
+        assert_eq!(custom.page_size(), 50);
+        assert_eq!(custom.offset(), 200); // (5 - 1) * 50
+    }
+
+    #[test]
+    fn offset_uses_default_page_size_when_only_page_set() {
+        let q = PaginationQuery {
+            page: Some(3),
+            page_size: None,
+        };
+        assert_eq!(q.offset(), 40); // (3 - 1) * 20
+    }
+
+    #[test]
+    fn validation_enforces_positive_ranges() {
+        // Valeurs valides (bornes incluses).
+        assert!(PaginationQuery {
+            page: Some(1),
+            page_size: Some(1),
+        }
+        .validate()
+        .is_ok());
+        assert!(PaginationQuery {
+            page: Some(1),
+            page_size: Some(100),
+        }
+        .validate()
+        .is_ok());
+        // None : accepté (les défauts s'appliquent).
+        assert!(PaginationQuery {
+            page: None,
+            page_size: None,
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_values() {
+        // page < 1
+        assert!(PaginationQuery {
+            page: Some(0),
+            page_size: Some(20),
+        }
+        .validate()
+        .is_err());
+        // page_size < 1
+        assert!(PaginationQuery {
+            page: Some(1),
+            page_size: Some(0),
+        }
+        .validate()
+        .is_err());
+        // page_size > 100 (anti-export massif)
+        assert!(PaginationQuery {
+            page: Some(1),
+            page_size: Some(101),
+        }
+        .validate()
+        .is_err());
+        // valeurs négatives
+        assert!(PaginationQuery {
+            page: Some(-1),
+            page_size: Some(-5),
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_query_fields() {
+        // `deny_unknown_fields` : un paramètre inattendu fait échouer le parsing.
+        let json = r#"{"page":1,"page_size":20,"sort":"email"}"#;
+        assert!(serde_json::from_str::<PaginationQuery>(json).is_err());
+    }
 }

@@ -151,4 +151,88 @@ mod tests {
         other.jwt_issuer = "someone-else".to_string();
         assert!(verify_access_token(&other, &token).is_err());
     }
+
+    /// Encode des claims arbitraires avec le secret de `config` (pour forger des
+    /// jetons volontairement anormaux que `issue_access_token` ne produirait pas).
+    fn encode_claims(config: &Config, claims: &AccessClaims) -> String {
+        encode(
+            &Header::new(Algorithm::HS256),
+            claims,
+            &EncodingKey::from_secret(config.jwt_secret.expose().as_bytes()),
+        )
+        .unwrap()
+    }
+
+    fn base_claims(iss: &str) -> AccessClaims {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        AccessClaims {
+            sub: Uuid::new_v4(),
+            role: UserRole::User,
+            iss: iss.to_string(),
+            iat: now,
+            exp: now + 900,
+            jti: Uuid::new_v4(),
+            sid: Uuid::new_v4(),
+            typ: "access".to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_expired_token() {
+        let config = cfg();
+        let mut claims = base_claims(&config.jwt_issuer);
+        // Expiré bien au-delà de la tolérance d'horloge (leeway = 5 s) :
+        // exp = now + 900 - 2000 = now - 1100.
+        claims.iat -= 2000;
+        claims.exp -= 2000;
+        let token = encode_claims(&config, &claims);
+        assert!(verify_access_token(&config, &token).is_err());
+    }
+
+    #[test]
+    fn rejects_non_access_token_type() {
+        let config = cfg();
+        let mut claims = base_claims(&config.jwt_issuer);
+        claims.typ = "refresh".to_string();
+        let token = encode_claims(&config, &claims);
+        // Signature valide mais type != "access" -> confusion de token refusée.
+        assert!(verify_access_token(&config, &token).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_tokens() {
+        let config = cfg();
+        for bad in ["", "not-a-jwt", "a.b", "a.b.c", "....."] {
+            assert!(
+                verify_access_token(&config, bad).is_err(),
+                "toléré: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_claim_fields() {
+        // `deny_unknown_fields` : un token portant un champ imprévu est rejeté au
+        // décodage (défense en profondeur contre l'injection de claims).
+        let config = cfg();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let payload = serde_json::json!({
+            "sub": Uuid::new_v4(),
+            "role": "user",
+            "iss": config.jwt_issuer,
+            "iat": now,
+            "exp": now + 900,
+            "jti": Uuid::new_v4(),
+            "sid": Uuid::new_v4(),
+            "typ": "access",
+            "is_admin": true, // champ pirate
+        });
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &payload,
+            &EncodingKey::from_secret(config.jwt_secret.expose().as_bytes()),
+        )
+        .unwrap();
+        assert!(verify_access_token(&config, &token).is_err());
+    }
 }

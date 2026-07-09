@@ -299,3 +299,45 @@ fn dummy_phc() -> &'static str {
         password::hash_password("timing-equalization-placeholder").unwrap_or_default()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_time_duration_converts_seconds() {
+        assert_eq!(
+            to_time_duration(std::time::Duration::from_secs(1_209_600)),
+            time::Duration::seconds(1_209_600)
+        );
+        assert_eq!(
+            to_time_duration(std::time::Duration::ZERO),
+            time::Duration::seconds(0)
+        );
+        // Les fractions de seconde sont tronquées (le cookie raisonne en secondes).
+        assert_eq!(
+            to_time_duration(std::time::Duration::from_millis(1_500)),
+            time::Duration::seconds(1)
+        );
+    }
+
+    #[test]
+    fn dummy_phc_is_a_valid_argon2_hash() {
+        // Doit être un vrai hash Argon2id vérifiable, pour un coût de vérification
+        // réaliste (anti-énumération par temps de réponse).
+        let phc = dummy_phc();
+        assert!(phc.starts_with("$argon2id$"));
+        // Stable entre appels (memoïsé).
+        assert_eq!(phc, dummy_phc());
+        // Vérifiable : le placeholder correspond, un autre mot de passe non.
+        assert!(password::verify_password("timing-equalization-placeholder", phc).unwrap());
+        assert!(!password::verify_password("autre", phc).unwrap());
+    }
+
+    #[test]
+    fn refresh_cookie_name_is_scoped_to_auth_path() {
+        // Invariant de sécurité documenté : le cookie de refresh est nommé
+        // `refresh_token` (le path/attributs sont vérifiés en intégration).
+        assert_eq!(REFRESH_COOKIE, "refresh_token");
+    }
+}

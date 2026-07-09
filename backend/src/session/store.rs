@@ -428,5 +428,27 @@ mod tests {
     fn opt_maps_empty_to_none() {
         assert_eq!(opt(String::new()), None);
         assert_eq!(opt("x".to_string()), Some("x".to_string()));
+        // Seule la chaîne VIDE devient None : un blanc est une valeur légitime.
+        assert_eq!(opt(" ".to_string()), Some(" ".to_string()));
+    }
+
+    #[test]
+    fn keys_use_distinct_namespaces_for_same_uuid() {
+        // Un même UUID ne doit jamais produire de collision entre espaces de clés.
+        let id = Uuid::new_v4();
+        let sess = sess_key(&id);
+        let user = user_key(&id);
+        assert!(sess.starts_with("sess:"));
+        assert!(user.starts_with("usess:"));
+        assert_ne!(sess, user);
+        assert!(sess.contains(&id.to_string()));
+    }
+
+    #[test]
+    fn error_from_redis_is_backend_variant() {
+        // Toute erreur d'infrastructure Redis se mappe sur `Backend` (=> 503).
+        let redis_err: redis::RedisError = (redis::ErrorKind::IoError, "connection reset").into();
+        let mapped: SessionError = redis_err.into();
+        assert!(matches!(mapped, SessionError::Backend(_)));
     }
 }

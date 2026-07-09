@@ -187,4 +187,87 @@ mod tests {
         let got = client_ip(&headers, Some(ip("203.0.113.7")), 1);
         assert_eq!(got, Some(ip("203.0.113.7")));
     }
+
+    #[test]
+    fn no_peer_and_no_usable_xff_yields_none() {
+        // hops=0 sans pair TCP : aucune clé.
+        assert_eq!(client_ip(&HeaderMap::new(), None, 0), None);
+        // hops=1 mais XFF absent et pas de pair : None.
+        assert_eq!(client_ip(&HeaderMap::new(), None, 1), None);
+    }
+
+    #[test]
+    fn malformed_ip_at_trusted_index_falls_back_to_peer() {
+        // L'entrée à l'index de confiance n'est pas une IP valide : on ne devine
+        // pas, on retombe sur le pair TCP.
+        let headers = headers_with_xff("9.9.9.9, not-an-ip");
+        let got = client_ip(&headers, Some(ip("10.0.0.1")), 1);
+        assert_eq!(got, Some(ip("10.0.0.1")));
+    }
+
+    #[test]
+    fn parses_ipv6_from_trusted_position() {
+        let headers = headers_with_xff("2001:db8::1, ::1");
+        // hops=1 -> entrée la plus à droite (::1).
+        let got = client_ip(&headers, Some(ip("10.0.0.1")), 1);
+        assert_eq!(got, Some(ip("::1")));
+        // hops=2 -> entrée à gauche du segment de confiance (2001:db8::1).
+        let got = client_ip(&headers, Some(ip("10.0.0.1")), 2);
+        assert_eq!(got, Some(ip("2001:db8::1")));
+    }
+
+    #[test]
+    fn empty_and_whitespace_segments_are_ignored() {
+        // Segments vides / espaces filtrés : la chaîne effective est
+        // [9.9.9.9, 203.0.113.7], donc hops=1 -> 203.0.113.7.
+        let headers = headers_with_xff("9.9.9.9, , 203.0.113.7 ,");
+        let got = client_ip(&headers, Some(ip("10.0.0.1")), 1);
+        assert_eq!(got, Some(ip("203.0.113.7")));
+    }
+
+    // --- peer_ip + RateLimitKeyExtractor ---------------------------------
+
+    use axum::extract::ConnectInfo;
+    use axum::http::Request;
+
+    fn request_with(peer: Option<SocketAddr>, xff: Option<&str>) -> Request<()> {
+        let mut req = Request::new(());
+        if let Some(p) = peer {
+            req.extensions_mut().insert(ConnectInfo(p));
+        }
+        if let Some(v) = xff {
+            req.headers_mut()
+                .insert("x-forwarded-for", v.parse().unwrap());
+        }
+        req
+    }
+
+    #[test]
+    fn peer_ip_reads_connect_info_or_none() {
+        let req = request_with(Some("203.0.113.7:1234".parse().unwrap()), None);
+        assert_eq!(peer_ip(req.extensions()), Some(ip("203.0.113.7")));
+
+        let bare = request_with(None, None);
+        assert_eq!(peer_ip(bare.extensions()), None);
+    }
+
+    #[test]
+    fn rate_limit_extractor_uses_trusted_ip() {
+        // 1 hop : l'IP réelle est celle ajoutée par le proxy (à droite), pas la
+        // valeur forgée à gauche -> pas de contournement de quota par XFF.
+        let extractor = RateLimitKeyExtractor::new(1);
+        let req = request_with(
+            Some("10.0.0.1:1".parse().unwrap()),
+            Some("9.9.9.9, 203.0.113.7"),
+        );
+        assert_eq!(extractor.extract(&req).unwrap(), ip("203.0.113.7"));
+    }
+
+    #[test]
+    fn rate_limit_extractor_errors_without_any_key() {
+        // hops=0 et aucun pair TCP : impossible d'extraire une clé.
+        let extractor = RateLimitKeyExtractor::new(0);
+        let req = request_with(None, None);
+        assert!(extractor.extract(&req).is_err());
+    }
 }

@@ -11,3 +11,7 @@
 
 # Divers
 *.log
+
+# Fichier de persistance Redis créé par un redis-server lancé en local pour les
+# tests (écrit dans le CWD) : artefact de dev, jamais committé.
+dump.rdb

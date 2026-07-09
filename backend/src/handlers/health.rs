@@ -30,3 +30,14 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<serde
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn liveness_reports_ok_without_side_effects() {
+        let Json(body) = liveness().await;
+        assert_eq!(body, json!({ "status": "ok" }));
+    }
+}
