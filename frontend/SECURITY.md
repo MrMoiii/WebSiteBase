@@ -151,10 +151,13 @@ Navigateur ──cookie scellé `__Host-wsb_session` (HttpOnly)──▶ Next.js
 
 ## Limites connues
 
-1. **Fenêtre de révocation (~15 min)** : un rôle retiré ou un compte
-   désactivé reste effectif jusqu'à expiration de l'access token (pas de
-   liste de révocation des JWT côté backend). Atténué par le TTL court et la
-   revérification du rôle en base sur les endpoints admin.
+1. **Rôle scellé en session, potentiellement en retard** : le rôle est figé
+   dans le cookie de session au login/refresh. Côté **backend**, la révocation
+   est désormais **immédiate** — la session est vérifiée dans Redis (le `sid` du
+   JWT) et le rôle rechargé en base à **chaque** requête : logout, révocation de
+   session ou rétrogradation bloquent l'accès aux **données** sans attendre
+   l'expiration du JWT. Le seul retard résiduel est l'**UI** (coquille de page)
+   jusqu'au prochain refresh — cf. point 2.
 2. **Le rôle scellé en session peut être en retard** sur la base (instantané
    au login/refresh). Conséquence maximale : un ex-admin voit la coquille de
    la page admin jusqu'au prochain refresh — les **données** sont refusées
@@ -165,9 +168,12 @@ Navigateur ──cookie scellé `__Host-wsb_session` (HttpOnly)──▶ Next.js
 4. **Pas de rate limiting applicatif côté frontend** : l'anti-bruteforce
    repose sur le backend (rate limit IP + verrouillage de compte) et le
    honeypot. Un rate limit au niveau du reverse proxy reste recommandé.
-5. **Sessions côté cookie uniquement** : pas de révocation serveur des
-   sessions Next (le scellé est autoporté). La révocation effective passe par
-   celle du refresh token backend + l'expiration de l'access token.
+5. **Sessions côté cookie uniquement** : pas de révocation serveur du cookie
+   scellé Next lui-même (le scellé est autoporté, valide jusqu'à son TTL). Ce
+   n'est pas un risque d'accès : côté API, la révocation est **immédiate** (une
+   session backend révoquée dans Redis fait rejeter le JWT dès la requête
+   suivante) — le cookie Next persistant ne donne donc accès à rien sans session
+   backend active.
 6. **Logout best effort** : si l'API est injoignable au logout, la session
    locale est détruite mais le refresh token backend reste actif jusqu'à son
    TTL (événement loggé).

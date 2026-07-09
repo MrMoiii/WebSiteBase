@@ -52,15 +52,18 @@ concurrentes présentant le même refresh token passaient toutes deux le contrô
 « non révoqué » avant le `UPDATE`, et émettaient **chacune** une nouvelle session :
 un même token engendrait plusieurs sessions valides (rejeu).
 
-**Correctif.** `handlers/auth.rs` : la révocation est déjà atomique
-(`UPDATE … WHERE revoked_at IS NULL`) et retourne le nombre de lignes affectées.
-On **exige désormais `rows_affected == 1`** ; sinon (race perdue ou rejeu d'un
-token déjà tourné) la requête est rejetée en `401` et un événement SOC
-`refresh_token_reuse` est journalisé.
+**Correctif.** Initialement corrigé côté PostgreSQL en exigeant
+`rows_affected == 1` sur l'`UPDATE … WHERE revoked_at IS NULL` (un seul appelant
+gagne). Depuis, les sessions ont migré vers **Redis** (source de vérité, cf.
+[`backend/SESSIONS.md`](./backend/SESSIONS.md)) : la rotation repose désormais sur
+un **`GETDEL` atomique** de la clé `rt:{hash}` — un seul appelant récupère le
+`sid`, un rejeu ou une requête concurrente obtient `nil` ⇒ `401` (événement SOC
+`refresh_token_invalid`). L'anti-rejeu est donc garanti **par construction**
+(opération atomique du store), sans dépendre d'un décompte de lignes.
 
-> Renforcement possible (non inclus, nécessite une nouvelle requête SQL donc une
-> régénération du cache `.sqlx` avec une base) : sur rejeu détecté, révoquer
-> **toute la famille** de tokens de l'utilisateur (détection de vol façon OWASP).
+> Renforcement possible (non inclus) : sur rejeu détecté, révoquer **toute la
+> famille** de sessions de l'utilisateur (détection de vol façon OWASP) — le
+> store expose déjà la révocation de masse (`revoke_others`).
 
 ## D — Overflow d'entier sur la pagination (corrigé)
 
@@ -102,8 +105,8 @@ consultez votre boîte mail »), explicitement hors périmètre de cette itérat
 
 ## Validation
 
-- `cargo test --lib` : 26/26 OK (dont 9 nouveaux tests pour A et D).
+- `cargo test --lib` : **147/147** OK (base de tests unitaires exhaustive, dont
+  les tests d'IP anti-spoofing et de pagination saturante ci-dessus).
 - `cargo fmt --all --check` : propre.
-- `cargo clippy --all-targets --all-features -- -D warnings` : zéro warning.
-- Aucune requête SQL ajoutée/modifiée : le cache `.sqlx` reste valide (build
-  offline CI inchangé). Les tests d'intégration (base requise) s'exécutent en CI.
+- `cargo clippy --all-targets -- -D warnings` : zéro warning.
+- Tests d'intégration (**PostgreSQL + Redis**) : 22/22, exécutés en CI.

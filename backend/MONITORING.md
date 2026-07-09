@@ -308,8 +308,10 @@ requête, ouvrir **Explore → OpenSearch** et filtrer `request_id:"<id>"`.
   d'en-tête d'autorisation, **pas de query string** (qui pourrait contenir des
   termes personnels) — uniquement des métadonnées techniques.
 - **Cluster non exposé** : pas de port publié ; accès interne uniquement.
-- **Mapping strict** (`dynamic: strict`) : impossible d'injecter des champs
-  arbitraires dans l'index de logs.
+- **Non-fuite garantie côté producteur** : l'index de logs utilise `dynamic: true`
+  (un index de logs doit accepter les champs structurés variables des events) ;
+  la garantie de confidentialité vient donc du **code qui produit les documents**
+  (jamais de corps, d'en-tête d'auth ni de query string), pas du mapping.
 - **Best-effort & isolé** : une panne d'OpenSearch n'impacte ni la latence ni
   la disponibilité de l'API (abandon silencieux + log).
 
