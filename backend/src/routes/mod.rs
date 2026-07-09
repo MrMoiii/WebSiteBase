@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderName, HeaderValue, Method, Request, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower::ServiceBuilder;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -18,7 +18,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{admin, auth, health, metrics, users};
+use crate::handlers::{admin, auth, health, metrics, sessions, users};
 use crate::middleware::client::RateLimitKeyExtractor;
 use crate::middleware::security_headers::SECURITY_HEADERS;
 use crate::monitoring::layer::record_requests;
@@ -65,6 +65,13 @@ pub fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .nest("/auth", auth_routes)
         .route("/users/me", get(users::get_me).patch(users::update_me))
+        // Gestion des sessions actives (authentifiées via l'extracteur AuthUser).
+        .route("/users/me/sessions", get(sessions::list_sessions))
+        .route(
+            "/users/me/sessions/logout-others",
+            post(sessions::logout_others),
+        )
+        .route("/users/me/sessions/{sid}", delete(sessions::revoke_session))
         .route("/admin/users", get(admin::list_users));
 
     let mut app = Router::new()

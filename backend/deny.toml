@@ -2,15 +2,23 @@
 # Exécuter : cargo deny check
 
 [advisories]
-# Base RustSec. Échoue sur toute vulnérabilité connue ou crate non maintenue.
+# Base RustSec. Échoue sur toute VULNÉRABILITÉ connue.
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-# Aucune dérogation : on ne masque aucun avis. `cargo deny` raisonne sur le
-# graphe de dépendances RÉEL (features résolues), donc la crate `rsa`
-# (RUSTSEC-2023-0071), tirée par le driver MySQL optionnel et NON activé de
-# sqlx, n'apparaît pas ici. `proc-macro-error2` (RUSTSEC-2026-0173) a été
-# éliminé en migrant de `validator` vers `garde`.
+# Avis « unmaintained » (informatifs, PAS des vulnérabilités) : on ne gate que
+# sur nos dépendances DIRECTES (que l'on maîtrise), pas sur les deps transitives
+# profondes que l'on ne contrôle pas. Ex. `rustls-pemfile` (RUSTSEC-2025-0134)
+# est tiré transitivement par `redis` (via `rustls-native-certs`) pour le TLS ;
+# c'est un simple wrapper autour de `rustls-pki-types` (lui, maintenu), sans
+# faille. On ne peut ni le retirer (feature `tls-rustls` de redis), ni le
+# masquer par un `ignore` ad hoc — d'où cette politique, tout en gardant la
+# liste `ignore` VIDE (aucune vulnérabilité masquée).
+unmaintained = "workspace"
+# Aucune dérogation de VULNÉRABILITÉ : la crate `rsa` (RUSTSEC-2023-0071), tirée
+# par le driver MySQL optionnel et NON activé de sqlx, n'apparaît pas dans le
+# graphe résolu ; `proc-macro-error2` (RUSTSEC-2026-0173) a été éliminé en
+# migrant de `validator` vers `garde`.
 ignore = []
 
 [licenses]

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            email,\n            password_hash,\n            display_name,\n            role AS \"role!: UserRole\",\n            failed_login_attempts,\n            locked_until,\n            created_at,\n            updated_at\n        FROM users\n        WHERE lower(email) = lower($1)\n        ",
+  "query": "\n        SELECT\n            id,\n            email,\n            password_hash,\n            display_name,\n            role AS \"role!: UserRole\",\n            created_at,\n            updated_at\n        FROM users\n        WHERE lower(email) = lower($1)\n        ",
   "describe": {
     "columns": [
       {
@@ -40,21 +40,11 @@
       },
       {
         "ordinal": 5,
-        "name": "failed_login_attempts",
-        "type_info": "Int4"
-      },
-      {
-        "ordinal": 6,
-        "name": "locked_until",
-        "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -71,10 +61,8 @@
       true,
       false,
       false,
-      true,
-      false,
       false
     ]
   },
-  "hash": "14312227b2b6895d7e238bc0d115578a6750fd8c1fd3c550af9ff25790f9abd2"
+  "hash": "d5713113ea8b9d789fbd68350f407e128ad4d62ceab6220e5206dc6dc8d8a28a"
 }

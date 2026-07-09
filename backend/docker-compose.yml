@@ -30,6 +30,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # Store de sessions (source de vérité des sessions / refresh tokens).
+  redis:
+    image: redis:7-alpine
+    # Persistance légère (AOF) : un redémarrage ne déconnecte pas tout le monde.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: .
@@ -37,12 +52,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       APP_BIND_ADDR: "0.0.0.0:8080"
       APP_TRUSTED_PROXY_HOPS: "1"
       # Rôle applicatif DML-only au runtime.
       DATABASE_URL: "postgres://app_user:app_dev_pw@db:5432/websitebase"
       DATABASE_MAX_CONNECTIONS: "10"
+      # Store de sessions Redis (source de vérité). En prod : rediss:// (TLS).
+      REDIS_URL: "redis://redis:6379"
       # En dev uniquement : remplacer par un secret fort en production.
       JWT_SECRET: "dev_only_change_me_secret_at_least_32_bytes_long"
       JWT_ISSUER: "websitebase"
@@ -68,3 +87,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

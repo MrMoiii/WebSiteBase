@@ -1,11 +1,11 @@
 //! Extracteurs d'authentification et d'autorisation.
 //!
-//! `AuthUser` valide le JWT d'accès PUIS recharge l'utilisateur en base : on
-//! obtient ainsi le rôle COURANT (un changement de privilège ou une suppression
-//! de compte prend effet immédiatement, sans attendre l'expiration du token).
-//! `AdminUser` impose en plus le rôle admin. L'autorisation est ainsi vérifiée
-//! au niveau de chaque handler qui exige ces extracteurs (exigence #9), et pas
-//! seulement au routage.
+//! `AuthUser` valide le JWT d'accès, vérifie que sa SESSION est toujours active
+//! dans Redis (révocation immédiate : un logout/ban prend effet sans attendre
+//! l'expiration du token), PUIS recharge l'utilisateur en base pour obtenir le
+//! rôle COURANT. `AdminUser` impose en plus le rôle admin. L'autorisation est
+//! ainsi vérifiée au niveau de chaque handler qui exige ces extracteurs
+//! (exigence #9), et pas seulement au routage.
 
 use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
@@ -23,6 +23,9 @@ pub struct AuthUser {
     pub id: Uuid,
     pub email: String,
     pub role: UserRole,
+    /// Session courante (permet de marquer « cette session » dans la liste et
+    /// de préserver la session active lors d'une déconnexion des autres).
+    pub sid: Uuid,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -45,7 +48,15 @@ impl FromRequestParts<AppState> for AuthUser {
         // 2. Vérifier signature, expiration, émetteur et type du token.
         let claims = crate::auth::jwt::verify_access_token(&state.config, token)?;
 
-        // 3. Recharger l'utilisateur pour obtenir l'état/rôle COURANT.
+        // 3. La session doit être ACTIVE dans Redis ET appartenir au sujet du
+        //    token. Une session révoquée (logout, « déconnexion partout », ban)
+        //    invalide le JWT immédiatement, avant son expiration.
+        match state.session.owner_if_active(&claims.sid).await? {
+            Some(owner) if owner == claims.sub => {}
+            _ => return Err(ApiError::Unauthorized),
+        }
+
+        // 4. Recharger l'utilisateur pour obtenir l'état/rôle COURANT.
         let user = db::find_user_by_id(&state.pool, claims.sub)
             .await?
             .ok_or(ApiError::Unauthorized)?;
@@ -54,6 +65,7 @@ impl FromRequestParts<AppState> for AuthUser {
             id: user.id,
             email: user.email,
             role: user.role,
+            sid: claims.sid,
         })
     }
 }

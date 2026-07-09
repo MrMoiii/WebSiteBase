@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO users (email, password_hash, display_name)\n        VALUES ($1, $2, $3)\n        RETURNING\n            id,\n            email,\n            password_hash,\n            display_name,\n            role AS \"role!: UserRole\",\n            failed_login_attempts,\n            locked_until,\n            created_at,\n            updated_at\n        ",
+  "query": "\n        SELECT\n            id,\n            email,\n            password_hash,\n            display_name,\n            role AS \"role!: UserRole\",\n            created_at,\n            updated_at\n        FROM users\n        WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -40,30 +40,18 @@
       },
       {
         "ordinal": 5,
-        "name": "failed_login_attempts",
-        "type_info": "Int4"
-      },
-      {
-        "ordinal": 6,
-        "name": "locked_until",
-        "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -73,10 +61,8 @@
       true,
       false,
       false,
-      true,
-      false,
       false
     ]
   },
-  "hash": "836187169089059f6813ece9ece13369365176ab0041eb3efd0e01055522934d"
+  "hash": "1db73a62c0fd7de93e2916b5d957b4638c996c760fbc6b800dfe212f543513c0"
 }

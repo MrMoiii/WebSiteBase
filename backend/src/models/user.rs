@@ -26,6 +26,10 @@ impl UserRole {
 ///
 /// Contient `password_hash` : ne JAMAIS sérialiser cette structure vers le
 /// client. On expose `UserProfile` à la place.
+///
+/// Le verrouillage anti-bruteforce (ancien `failed_login_attempts` /
+/// `locked_until`) vit désormais dans Redis (`lock:{user_id}`) — cf.
+/// `backend/SESSIONS.md` — et ne figure plus dans cet enregistrement.
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     pub id: Uuid,
@@ -33,8 +37,6 @@ pub struct UserRecord {
     pub password_hash: String,
     pub display_name: Option<String>,
     pub role: UserRole,
-    pub failed_login_attempts: i32,
-    pub locked_until: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

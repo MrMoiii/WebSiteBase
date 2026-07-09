@@ -7,6 +7,7 @@ use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::monitoring::{Metrics, MonitoringHandle};
+use crate::session::SessionStore;
 
 /// État cloné à chaque requête. `PgPool` est un `Arc` interne (clone bon marché)
 /// et `Config` est encapsulée dans un `Arc` pour partager la config immuable.
@@ -14,6 +15,9 @@ use crate::monitoring::{Metrics, MonitoringHandle};
 pub struct AppState {
     pub config: Arc<Config>,
     pub pool: PgPool,
+    /// Store de sessions Redis (source de vérité des sessions). Clone léger
+    /// (connexion multiplexée). Indispensable à l'authentification.
+    pub session: SessionStore,
     /// Poignée de monitoring (clone léger : un `Sender` mpsc). `None` si le
     /// monitoring OpenSearch n'est pas configuré.
     pub monitoring: Option<MonitoringHandle>,
@@ -23,10 +27,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, pool: PgPool) -> Self {
+    pub fn new(config: Config, pool: PgPool, session: SessionStore) -> Self {
         Self {
             config: Arc::new(config),
             pool,
+            session,
             monitoring: None,
             metrics: Arc::new(Metrics::new()),
         }

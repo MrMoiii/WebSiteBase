@@ -15,6 +15,7 @@ pub mod middleware;
 pub mod models;
 pub mod monitoring;
 pub mod routes;
+pub mod session;
 pub mod state;
 pub mod telemetry;
 
@@ -51,6 +52,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // applicatif n'a pas de droits DDL). Elles sont jouées séparément avec le
     // rôle propriétaire (cf. README).
 
+    // 3ter) Store de sessions Redis (source de vérité des sessions). Obligatoire :
+    // l'authentification en dépend. Le TTL glissant (idle) suit `refresh_ttl`.
+    let session = session::SessionStore::connect(&config.redis, config.refresh_ttl)
+        .await
+        .context("connexion au store de sessions Redis")?;
+    tracing::info!("store de sessions Redis connecté");
+
     // 3bis) Monitoring d'API via OpenSearch (optionnel). Construit le client TLS
     // (charge les certificats), provisionne l'index template, puis démarre la
     // tâche de fond d'envoi. Si la config est absente, le monitoring est
@@ -85,7 +93,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let bind_addr = config.bind_addr;
-    let state = AppState::new(config, pool).with_monitoring(monitoring);
+    let state = AppState::new(config, pool, session).with_monitoring(monitoring);
     let app = routes::build_router(state);
 
     // 4) Écoute sur un port non privilégié, derrière un reverse proxy TLS.
