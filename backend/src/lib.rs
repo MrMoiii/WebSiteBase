@@ -197,4 +197,50 @@ mod anyhow_lite {
             })
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Context;
+        use std::io::Error as IoError;
+
+        fn failing() -> Result<u32, IoError> {
+            Err(IoError::other("disque plein"))
+        }
+
+        #[test]
+        fn context_passes_through_ok() {
+            let ok: Result<u32, IoError> = Ok(7);
+            assert_eq!(ok.context("inutile").unwrap(), 7);
+        }
+
+        #[test]
+        fn context_wraps_error_message_and_preserves_source() {
+            let err = failing().context("écriture du fichier").unwrap_err();
+            // Display = "message: source".
+            assert_eq!(err.to_string(), "écriture du fichier: disque plein");
+            // La source d'origine reste chaînée (pas de perte d'information).
+            let source = std::error::Error::source(err.as_ref()).expect("source présente");
+            assert_eq!(source.to_string(), "disque plein");
+        }
+
+        #[test]
+        fn with_context_is_lazy_on_ok() {
+            use std::cell::Cell;
+            let called = Cell::new(false);
+            let ok: Result<u32, IoError> = Ok(1);
+            let _ = ok.with_context(|| {
+                called.set(true);
+                "ne devrait pas être évalué"
+            });
+            assert!(!called.get(), "la closure ne doit PAS être appelée sur Ok");
+        }
+
+        #[test]
+        fn with_context_builds_message_on_err() {
+            let err = failing()
+                .with_context(|| format!("code {}", 42))
+                .unwrap_err();
+            assert_eq!(err.to_string(), "code 42: disque plein");
+        }
+    }
 }

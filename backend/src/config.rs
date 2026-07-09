@@ -430,3 +430,538 @@ where
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // --- Secret : jamais de fuite via Debug -------------------------------
+
+    #[test]
+    fn secret_exposes_value_but_debug_is_redacted() {
+        let s = Secret::new("super-sensitive-value");
+        assert_eq!(s.expose(), "super-sensitive-value");
+        let dbg = format!("{s:?}");
+        assert_eq!(dbg, "Secret(***redacted***)");
+        assert!(!dbg.contains("super-sensitive-value"));
+    }
+
+    #[test]
+    fn secret_clone_preserves_value() {
+        let s = Secret::new(String::from("v"));
+        assert_eq!(s.clone().expose(), "v");
+    }
+
+    #[test]
+    fn opensearch_auth_debug_never_leaks_secret() {
+        let basic = OpenSearchAuth::Basic {
+            username: "admin".into(),
+            password: Secret::new("hunter2"),
+        };
+        let d = format!("{basic:?}");
+        assert!(d.contains("admin"));
+        assert!(d.contains("***redacted***"));
+        assert!(!d.contains("hunter2"));
+
+        let key = OpenSearchAuth::ApiKey(Secret::new("api-key-material"));
+        let d = format!("{key:?}");
+        assert!(d.contains("***redacted***"));
+        assert!(!d.contains("api-key-material"));
+    }
+
+    #[test]
+    fn config_error_display_messages() {
+        assert_eq!(
+            ConfigError::Missing("X").to_string(),
+            "variable d'environnement obligatoire manquante : X"
+        );
+        assert_eq!(
+            ConfigError::Invalid {
+                name: "Y",
+                reason: "bad".into(),
+            }
+            .to_string(),
+            "variable d'environnement invalide Y : bad"
+        );
+    }
+
+    // --- is_valid_index_token : bornes et jeu de caractères ---------------
+
+    #[test]
+    fn index_token_accepts_valid_tokens() {
+        assert!(is_valid_index_token("api-logs"));
+        assert!(is_valid_index_token("a")); // 1 caractère
+        assert!(is_valid_index_token("0")); // chiffre en tête autorisé
+        assert!(is_valid_index_token("a_b-c9"));
+        assert!(is_valid_index_token(&"a".repeat(64))); // borne haute incluse
+    }
+
+    #[test]
+    fn index_token_rejects_out_of_bounds_length() {
+        assert!(!is_valid_index_token("")); // vide
+        assert!(!is_valid_index_token(&"a".repeat(65))); // > 64
+    }
+
+    #[test]
+    fn index_token_rejects_bad_first_char() {
+        assert!(!is_valid_index_token("_leading")); // OpenSearch interdit `_`
+        assert!(!is_valid_index_token("-leading"));
+        assert!(!is_valid_index_token("+leading"));
+        assert!(!is_valid_index_token("Abc")); // majuscule interdite partout
+    }
+
+    #[test]
+    fn index_token_rejects_bad_inner_chars() {
+        assert!(!is_valid_index_token("api.logs")); // point
+        assert!(!is_valid_index_token("api/logs")); // slash
+        assert!(!is_valid_index_token("api logs")); // espace
+        assert!(!is_valid_index_token("apiLogs")); // majuscule
+        assert!(!is_valid_index_token("api:logs")); // deux-points
+        assert!(!is_valid_index_token("logsé")); // non-ASCII
+    }
+
+    // --- from_env : accès sérialisé à l'environnement du process ----------
+    //
+    // `std::env` est un état global partagé : on sérialise TOUS les tests qui
+    // le touchent derrière un même verrou, et on restaure l'environnement
+    // après chaque cas (isolation contre les autres tests du binaire).
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Toutes les variables lues par la config (remises à zéro avant chaque cas).
+    const ALL_KEYS: &[&str] = &[
+        "APP_BIND_ADDR",
+        "APP_TRUSTED_PROXY_HOPS",
+        "DATABASE_URL",
+        "DATABASE_MAX_CONNECTIONS",
+        "JWT_SECRET",
+        "JWT_ISSUER",
+        "JWT_ACCESS_TTL_SECONDS",
+        "REFRESH_TTL_SECONDS",
+        "CORS_ALLOWED_ORIGINS",
+        "COOKIE_SECURE",
+        "MAX_BODY_BYTES",
+        "REQUEST_TIMEOUT_SECONDS",
+        "LOGIN_MAX_FAILED_ATTEMPTS",
+        "LOGIN_LOCKOUT_SECONDS",
+        "LOG_FILTER",
+        "REDIS_URL",
+        "SESSION_ABSOLUTE_TTL_SECONDS",
+        "AUTH_RATE_LIMIT_MAX",
+        "AUTH_RATE_LIMIT_WINDOW_SECONDS",
+        "OPENSEARCH_URL",
+        "OPENSEARCH_ALLOW_INSECURE",
+        "OPENSEARCH_API_KEY",
+        "OPENSEARCH_USERNAME",
+        "OPENSEARCH_PASSWORD",
+        "OPENSEARCH_CA_CERT_PATH",
+        "OPENSEARCH_CLIENT_IDENTITY_PATH",
+        "OPENSEARCH_INDEX_PREFIX",
+        "OPENSEARCH_TIMEOUT_SECONDS",
+        "OPENSEARCH_BATCH_SIZE",
+        "OPENSEARCH_FLUSH_INTERVAL_SECONDS",
+        "OPENSEARCH_CHANNEL_CAPACITY",
+    ];
+
+    /// Verrouille l'environnement, le nettoie, applique `vars`, exécute `f`,
+    /// puis restaure l'état initial. `None` = variable retirée.
+    fn with_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = ALL_KEYS
+            .iter()
+            .map(|k| (*k, std::env::var(k).ok()))
+            .collect();
+        for k in ALL_KEYS {
+            std::env::remove_var(k);
+        }
+        for (k, v) in vars {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        out
+    }
+
+    /// Jeu minimal de variables OBLIGATOIRES et valides pour `Config::from_env`.
+    fn valid_required() -> Vec<(&'static str, Option<&'static str>)> {
+        vec![
+            ("APP_BIND_ADDR", Some("127.0.0.1:8080")),
+            ("DATABASE_URL", Some("postgres://u:p@localhost/db")),
+            (
+                "JWT_SECRET",
+                Some("a_secret_that_is_at_least_32_bytes_long!!"),
+            ),
+            ("JWT_ISSUER", Some("websitebase")),
+            ("CORS_ALLOWED_ORIGINS", Some("https://example.com")),
+            ("REDIS_URL", Some("redis://localhost:6379")),
+        ]
+    }
+
+    fn merged(
+        extra: &[(&'static str, Option<&'static str>)],
+    ) -> Vec<(&'static str, Option<&'static str>)> {
+        let mut v = valid_required();
+        v.extend_from_slice(extra);
+        v
+    }
+
+    // -- helpers privés --
+
+    #[test]
+    fn require_rejects_missing_and_blank() {
+        with_env(&[("APP_BIND_ADDR", None)], || {
+            assert!(matches!(
+                require("APP_BIND_ADDR"),
+                Err(ConfigError::Missing(_))
+            ));
+        });
+        with_env(&[("APP_BIND_ADDR", Some("   "))], || {
+            assert!(matches!(
+                require("APP_BIND_ADDR"),
+                Err(ConfigError::Missing(_))
+            ));
+        });
+        with_env(&[("APP_BIND_ADDR", Some("value"))], || {
+            assert_eq!(require("APP_BIND_ADDR").unwrap(), "value");
+        });
+    }
+
+    #[test]
+    fn opt_string_trims_and_filters_empty() {
+        with_env(&[("LOG_FILTER", Some("  hello  "))], || {
+            assert_eq!(opt_string("LOG_FILTER"), Some("hello".to_string()));
+        });
+        with_env(&[("LOG_FILTER", Some("   "))], || {
+            assert_eq!(opt_string("LOG_FILTER"), None);
+        });
+        with_env(&[("LOG_FILTER", None)], || {
+            assert_eq!(opt_string("LOG_FILTER"), None);
+        });
+    }
+
+    #[test]
+    fn opt_parse_uses_default_and_reports_invalid() {
+        with_env(&[("MAX_BODY_BYTES", None)], || {
+            assert_eq!(opt_parse::<usize>("MAX_BODY_BYTES", 42).unwrap(), 42);
+        });
+        with_env(&[("MAX_BODY_BYTES", Some("  "))], || {
+            assert_eq!(opt_parse::<usize>("MAX_BODY_BYTES", 42).unwrap(), 42);
+        });
+        with_env(&[("MAX_BODY_BYTES", Some(" 100 "))], || {
+            assert_eq!(opt_parse::<usize>("MAX_BODY_BYTES", 42).unwrap(), 100);
+        });
+        with_env(&[("MAX_BODY_BYTES", Some("not-a-number"))], || {
+            assert!(matches!(
+                opt_parse::<usize>("MAX_BODY_BYTES", 42),
+                Err(ConfigError::Invalid { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn req_parse_reports_invalid_type() {
+        with_env(&[("APP_TRUSTED_PROXY_HOPS", Some("abc"))], || {
+            assert!(matches!(
+                req_parse::<usize>("APP_TRUSTED_PROXY_HOPS"),
+                Err(ConfigError::Invalid { .. })
+            ));
+        });
+    }
+
+    // -- Config::from_env --
+
+    #[test]
+    fn config_from_env_minimal_ok_with_defaults() {
+        let cfg = with_env(&valid_required(), Config::from_env).unwrap();
+        assert_eq!(cfg.bind_addr.port(), 8080);
+        assert_eq!(cfg.trusted_proxy_hops, 1); // défaut
+        assert_eq!(cfg.database_max_connections, 10); // défaut
+        assert_eq!(cfg.jwt_access_ttl, Duration::from_secs(900));
+        assert_eq!(cfg.cors_allowed_origins, vec!["https://example.com"]);
+        assert!(cfg.cookie_secure); // défaut true
+        assert_eq!(cfg.max_body_bytes, 1_048_576);
+        assert_eq!(cfg.login_max_failed_attempts, 5);
+        assert_eq!(cfg.log_filter, "info");
+        assert!(cfg.monitoring.is_none());
+    }
+
+    #[test]
+    fn config_from_env_rejects_short_jwt_secret() {
+        let vars = merged(&[("JWT_SECRET", Some("too-short"))]);
+        let err = with_env(&vars, Config::from_env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "JWT_SECRET",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn config_from_env_accepts_jwt_secret_exactly_32_bytes() {
+        let vars = merged(&[("JWT_SECRET", Some("0123456789abcdef0123456789abcdef"))]); // 32
+        assert!(with_env(&vars, Config::from_env).is_ok());
+    }
+
+    #[test]
+    fn config_from_env_missing_required_fields() {
+        for key in [
+            "APP_BIND_ADDR",
+            "DATABASE_URL",
+            "JWT_SECRET",
+            "JWT_ISSUER",
+            "CORS_ALLOWED_ORIGINS",
+            "REDIS_URL",
+        ] {
+            let vars = merged(&[(key, None)]);
+            let err = with_env(&vars, Config::from_env).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Missing(_) | ConfigError::Invalid { .. }),
+                "clé manquante {key} devrait échouer, obtenu {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_from_env_rejects_bad_bind_addr() {
+        let vars = merged(&[("APP_BIND_ADDR", Some("not-an-address"))]);
+        let err = with_env(&vars, Config::from_env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "APP_BIND_ADDR",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn config_from_env_rejects_empty_cors_list() {
+        // Une liste faite uniquement de séparateurs/espaces se réduit à vide.
+        let vars = merged(&[("CORS_ALLOWED_ORIGINS", Some("  ,  , "))]);
+        let err = with_env(&vars, Config::from_env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CORS_ALLOWED_ORIGINS",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn config_from_env_parses_multiple_cors_origins() {
+        let vars = merged(&[(
+            "CORS_ALLOWED_ORIGINS",
+            Some("https://a.com, https://b.com ,https://c.com"),
+        )]);
+        let cfg = with_env(&vars, Config::from_env).unwrap();
+        assert_eq!(
+            cfg.cors_allowed_origins,
+            vec!["https://a.com", "https://b.com", "https://c.com"]
+        );
+    }
+
+    // -- RedisConfig::from_env --
+
+    #[test]
+    fn redis_config_requires_url() {
+        with_env(&[("REDIS_URL", None)], || {
+            assert!(matches!(
+                RedisConfig::from_env(),
+                Err(ConfigError::Missing(_))
+            ));
+        });
+    }
+
+    #[test]
+    fn redis_config_rejects_bad_scheme() {
+        with_env(&[("REDIS_URL", Some("http://localhost:6379"))], || {
+            assert!(matches!(
+                RedisConfig::from_env(),
+                Err(ConfigError::Invalid {
+                    name: "REDIS_URL",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn redis_config_accepts_both_schemes_and_defaults() {
+        for url in ["redis://localhost:6379", "rediss://secure:6380"] {
+            let cfg = with_env(&[("REDIS_URL", Some(url))], RedisConfig::from_env).unwrap();
+            assert_eq!(cfg.url.expose(), url);
+            assert_eq!(cfg.session_absolute_ttl, Duration::from_secs(2_592_000));
+            assert_eq!(cfg.auth_rate_limit_max, 30);
+            assert_eq!(cfg.auth_rate_limit_window, Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn redis_config_clamps_rate_limit_floor_to_one() {
+        let vars = [
+            ("REDIS_URL", Some("redis://localhost:6379")),
+            ("AUTH_RATE_LIMIT_MAX", Some("0")),
+            ("AUTH_RATE_LIMIT_WINDOW_SECONDS", Some("0")),
+        ];
+        let cfg = with_env(&vars, RedisConfig::from_env).unwrap();
+        assert_eq!(cfg.auth_rate_limit_max, 1); // .max(1)
+        assert_eq!(cfg.auth_rate_limit_window, Duration::from_secs(1)); // .max(1)
+    }
+
+    #[test]
+    fn redis_config_rejects_non_numeric_ttl() {
+        let vars = [
+            ("REDIS_URL", Some("redis://localhost:6379")),
+            ("SESSION_ABSOLUTE_TTL_SECONDS", Some("forever")),
+        ];
+        assert!(matches!(
+            with_env(&vars, RedisConfig::from_env),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    // -- MonitoringConfig::from_env --
+
+    #[test]
+    fn monitoring_disabled_when_url_absent_or_blank() {
+        with_env(&[("OPENSEARCH_URL", None)], || {
+            assert!(MonitoringConfig::from_env().unwrap().is_none());
+        });
+        with_env(&[("OPENSEARCH_URL", Some("   "))], || {
+            assert!(MonitoringConfig::from_env().unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn monitoring_rejects_plain_http_without_optin() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("http://opensearch:9200")),
+            ("OPENSEARCH_USERNAME", Some("admin")),
+            ("OPENSEARCH_PASSWORD", Some("admin")),
+        ];
+        assert!(matches!(
+            with_env(&vars, MonitoringConfig::from_env),
+            Err(ConfigError::Invalid {
+                name: "OPENSEARCH_URL",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn monitoring_allows_http_with_insecure_optin() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("http://opensearch:9200/")),
+            ("OPENSEARCH_ALLOW_INSECURE", Some("true")),
+            ("OPENSEARCH_API_KEY", Some("k")),
+        ];
+        let cfg = with_env(&vars, MonitoringConfig::from_env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.base_url, "http://opensearch:9200"); // slash final retiré
+        assert!(matches!(cfg.auth, OpenSearchAuth::ApiKey(_)));
+    }
+
+    #[test]
+    fn monitoring_https_with_basic_auth_and_defaults() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("https://opensearch:9200")),
+            ("OPENSEARCH_USERNAME", Some("admin")),
+            ("OPENSEARCH_PASSWORD", Some("s3cret")),
+        ];
+        let cfg = with_env(&vars, MonitoringConfig::from_env)
+            .unwrap()
+            .unwrap();
+        match cfg.auth {
+            OpenSearchAuth::Basic { username, .. } => assert_eq!(username, "admin"),
+            _ => panic!("attendu Basic"),
+        }
+        assert_eq!(cfg.index_prefix, "api-logs"); // défaut
+        assert_eq!(cfg.batch_size, 500);
+        assert_eq!(cfg.channel_capacity, 10_000);
+    }
+
+    #[test]
+    fn monitoring_api_key_takes_priority_over_basic() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("https://os:9200")),
+            ("OPENSEARCH_API_KEY", Some("the-key")),
+            ("OPENSEARCH_USERNAME", Some("admin")),
+            ("OPENSEARCH_PASSWORD", Some("admin")),
+        ];
+        let cfg = with_env(&vars, MonitoringConfig::from_env)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(cfg.auth, OpenSearchAuth::ApiKey(_)));
+    }
+
+    #[test]
+    fn monitoring_rejects_empty_api_key() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("https://os:9200")),
+            ("OPENSEARCH_API_KEY", Some("   ")),
+        ];
+        assert!(matches!(
+            with_env(&vars, MonitoringConfig::from_env),
+            Err(ConfigError::Invalid {
+                name: "OPENSEARCH_API_KEY",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn monitoring_https_requires_some_auth() {
+        // https valide mais AUCUNE auth fournie -> username obligatoire manquant.
+        let vars = [("OPENSEARCH_URL", Some("https://os:9200"))];
+        assert!(matches!(
+            with_env(&vars, MonitoringConfig::from_env),
+            Err(ConfigError::Missing("OPENSEARCH_USERNAME"))
+        ));
+    }
+
+    #[test]
+    fn monitoring_rejects_invalid_index_prefix() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("https://os:9200")),
+            ("OPENSEARCH_API_KEY", Some("k")),
+            ("OPENSEARCH_INDEX_PREFIX", Some("Bad/Prefix")),
+        ];
+        assert!(matches!(
+            with_env(&vars, MonitoringConfig::from_env),
+            Err(ConfigError::Invalid {
+                name: "OPENSEARCH_INDEX_PREFIX",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn monitoring_clamps_numeric_floors() {
+        let vars = [
+            ("OPENSEARCH_URL", Some("https://os:9200")),
+            ("OPENSEARCH_API_KEY", Some("k")),
+            ("OPENSEARCH_BATCH_SIZE", Some("0")),
+            ("OPENSEARCH_FLUSH_INTERVAL_SECONDS", Some("0")),
+            ("OPENSEARCH_CHANNEL_CAPACITY", Some("0")),
+        ];
+        let cfg = with_env(&vars, MonitoringConfig::from_env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.batch_size, 1);
+        assert_eq!(cfg.flush_interval, Duration::from_secs(1));
+        assert_eq!(cfg.channel_capacity, 1);
+    }
+}

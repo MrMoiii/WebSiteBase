@@ -101,4 +101,82 @@ mod tests {
         };
         assert!(r.validate().is_err());
     }
+
+    fn register(email: &str, password: &str, display_name: Option<&str>) -> RegisterRequest {
+        RegisterRequest {
+            email: email.to_string(),
+            password: password.to_string(),
+            display_name: display_name.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn register_password_length_boundaries() {
+        // 12 = borne basse incluse ; 11 = rejeté.
+        assert!(register("a@b.co", &"x".repeat(12), None).validate().is_ok());
+        assert!(register("a@b.co", &"x".repeat(11), None)
+            .validate()
+            .is_err());
+        // 128 = borne haute incluse ; 129 = rejeté (anti-DoS de hachage).
+        assert!(register("a@b.co", &"x".repeat(128), None)
+            .validate()
+            .is_ok());
+        assert!(register("a@b.co", &"x".repeat(129), None)
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn register_display_name_boundaries() {
+        assert!(register("a@b.co", &"x".repeat(12), Some("y"))
+            .validate()
+            .is_ok());
+        assert!(register("a@b.co", &"x".repeat(12), Some(&"y".repeat(100)))
+            .validate()
+            .is_ok());
+        assert!(register("a@b.co", &"x".repeat(12), Some(&"y".repeat(101)))
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn register_email_rejects_overlong_local_part() {
+        // Adresse syntaxiquement plausible mais > 320 caractères : rejetée.
+        let huge = format!("{}@example.com", "a".repeat(320));
+        assert!(register(&huge, &"x".repeat(12), None).validate().is_err());
+    }
+
+    #[test]
+    fn login_validation_password_min_one() {
+        // Login borne le mot de passe à [1, 128] SANS minimum de robustesse.
+        let ok = LoginRequest {
+            email: "a@b.co".into(),
+            password: "x".into(),
+        };
+        assert!(ok.validate().is_ok());
+
+        let empty = LoginRequest {
+            email: "a@b.co".into(),
+            password: String::new(),
+        };
+        assert!(empty.validate().is_err());
+
+        let too_long = LoginRequest {
+            email: "a@b.co".into(),
+            password: "x".repeat(129),
+        };
+        assert!(too_long.validate().is_err());
+    }
+
+    #[test]
+    fn login_rejects_invalid_email_and_unknown_fields() {
+        let bad_email = LoginRequest {
+            email: "nope".into(),
+            password: "secret".into(),
+        };
+        assert!(bad_email.validate().is_err());
+
+        let json = r#"{"email":"a@b.co","password":"secret","captcha":"x"}"#;
+        assert!(serde_json::from_str::<LoginRequest>(json).is_err());
+    }
 }

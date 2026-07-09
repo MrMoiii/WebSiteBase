@@ -223,3 +223,178 @@ fn summarize_validation(report: &garde::Report) -> String {
         format!("Invalid input for field(s): {}.", fields.join(", "))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use garde::Validate;
+
+    /// Toutes les variantes, avec un détail non vide là où c'est pertinent (pour
+    /// vérifier qu'il ne fuite jamais au client).
+    fn all_variants() -> Vec<ApiError> {
+        vec![
+            ApiError::Validation("field x".into()),
+            ApiError::Unauthorized,
+            ApiError::Forbidden,
+            ApiError::NotFound,
+            ApiError::Conflict("Email already registered."),
+            ApiError::TooManyRequests,
+            ApiError::PayloadTooLarge,
+            ApiError::BadRequest("bad json".into()),
+            ApiError::ServiceUnavailable("redis down: connection refused".into()),
+            ApiError::Internal("SELECT boom FROM secret_table".into()),
+        ]
+    }
+
+    #[test]
+    fn status_codes_match_variants() {
+        use StatusCode as S;
+        let cases = [
+            (ApiError::Validation("x".into()), S::UNPROCESSABLE_ENTITY),
+            (ApiError::Unauthorized, S::UNAUTHORIZED),
+            (ApiError::Forbidden, S::FORBIDDEN),
+            (ApiError::NotFound, S::NOT_FOUND),
+            (ApiError::Conflict("x"), S::CONFLICT),
+            (ApiError::TooManyRequests, S::TOO_MANY_REQUESTS),
+            (ApiError::PayloadTooLarge, S::PAYLOAD_TOO_LARGE),
+            (ApiError::BadRequest("x".into()), S::BAD_REQUEST),
+            (
+                ApiError::ServiceUnavailable("x".into()),
+                S::SERVICE_UNAVAILABLE,
+            ),
+            (ApiError::Internal("x".into()), S::INTERNAL_SERVER_ERROR),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.status(), expected, "statut pour {err:?}");
+        }
+    }
+
+    #[test]
+    fn codes_are_stable_machine_strings() {
+        let expected = [
+            "validation_error",
+            "unauthorized",
+            "forbidden",
+            "not_found",
+            "conflict",
+            "too_many_requests",
+            "payload_too_large",
+            "bad_request",
+            "service_unavailable",
+            "internal_error",
+        ];
+        for (err, code) in all_variants().iter().zip(expected) {
+            assert_eq!(err.code(), code);
+        }
+    }
+
+    #[test]
+    fn internal_and_service_unavailable_never_leak_detail() {
+        let internal = ApiError::Internal("SELECT boom FROM secret_table".into());
+        assert_eq!(internal.public_message(), "An internal error occurred.");
+        assert!(!internal.public_message().contains("secret_table"));
+
+        let unavailable = ApiError::ServiceUnavailable("redis down: 10.0.0.5:6379".into());
+        assert!(!unavailable.public_message().contains("10.0.0.5"));
+        assert!(unavailable
+            .public_message()
+            .contains("temporarily unavailable"));
+    }
+
+    #[test]
+    fn safe_messages_are_passed_through() {
+        // Les messages destinés au client (Validation/BadRequest/Conflict) sont
+        // exposés tels quels — ils ne contiennent pas de donnée interne.
+        assert_eq!(
+            ApiError::Validation("Invalid input for field(s): email.".into()).public_message(),
+            "Invalid input for field(s): email."
+        );
+        assert_eq!(
+            ApiError::BadRequest("Invalid or malformed JSON body.".into()).public_message(),
+            "Invalid or malformed JSON body."
+        );
+        assert_eq!(
+            ApiError::Conflict("Email already registered.").public_message(),
+            "Email already registered."
+        );
+    }
+
+    #[tokio::test]
+    async fn into_response_sets_status_body_and_error_code_extension() {
+        for err in all_variants() {
+            let expected_status = err.status();
+            let expected_code = err.code();
+            let response = err.into_response();
+            assert_eq!(response.status(), expected_status);
+            // Le code stable est exposé en extension pour les couches en aval.
+            let ext = response
+                .extensions()
+                .get::<ErrorCode>()
+                .expect("ErrorCode en extension");
+            assert_eq!(ext.0, expected_code);
+
+            let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["error"]["code"], expected_code);
+            assert!(json["error"]["message"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn into_response_internal_body_is_generic() {
+        let response = ApiError::Internal("db password = hunter2".into()).into_response();
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("An internal error occurred."));
+        assert!(!text.contains("hunter2"));
+    }
+
+    #[test]
+    fn from_sqlx_row_not_found_is_404_else_internal() {
+        assert!(matches!(
+            ApiError::from(sqlx::Error::RowNotFound),
+            ApiError::NotFound
+        ));
+        let other = ApiError::from(sqlx::Error::Protocol("boom".into()));
+        match other {
+            ApiError::Internal(detail) => assert!(detail.contains("database error")),
+            _ => panic!("attendu Internal"),
+        }
+    }
+
+    #[test]
+    fn from_session_error_is_service_unavailable() {
+        let err = ApiError::from(crate::session::SessionError::Backend("nope".into()));
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn from_garde_report_lists_offending_fields_without_values() {
+        // Un DTO invalide (email + mot de passe) produit un rapport ; le résumé
+        // cite les champs mais jamais les valeurs reçues.
+        let bad = crate::models::auth::RegisterRequest {
+            email: "not-an-email".to_string(),
+            password: "short".to_string(),
+            display_name: None,
+        };
+        let report = bad.validate().unwrap_err();
+        let err = ApiError::from(report);
+        match err {
+            ApiError::Validation(msg) => {
+                assert!(msg.contains("email"));
+                assert!(msg.contains("password"));
+                assert!(!msg.contains("not-an-email"));
+                assert!(!msg.contains("short"));
+            }
+            _ => panic!("attendu Validation"),
+        }
+    }
+
+    #[test]
+    fn summarize_validation_empty_report_is_generic() {
+        let empty = garde::Report::new();
+        assert_eq!(summarize_validation(&empty), "Invalid input.");
+    }
+}

@@ -248,4 +248,90 @@ mod tests {
         let out = m.render();
         assert!(!out.contains("request_id"));
     }
+
+    #[test]
+    fn normalize_method_is_case_sensitive_closed_set() {
+        for m in ["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"] {
+            assert_eq!(normalize_method(m), m);
+        }
+        // Minuscule / inconnu / vide -> repli borné.
+        assert_eq!(normalize_method("get"), "other");
+        assert_eq!(normalize_method("TRACE"), "other");
+        assert_eq!(normalize_method(""), "other");
+    }
+
+    #[test]
+    fn normalize_route_maps_known_and_folds_unknown() {
+        for r in [
+            "/health",
+            "/health/ready",
+            "/metrics",
+            "/api/v1/auth/register",
+            "/api/v1/auth/login",
+            "/api/v1/auth/refresh",
+            "/api/v1/auth/logout",
+            "/api/v1/users/me",
+            "/api/v1/admin/users",
+        ] {
+            assert_eq!(normalize_route(r), r);
+        }
+        // Sondes / traversées de chemin -> "other" (borne la cardinalité).
+        assert_eq!(normalize_route("/api/v1/users/me/"), "other"); // slash final
+        assert_eq!(normalize_route("/wp-admin"), "other");
+        assert_eq!(normalize_route(""), "other");
+    }
+
+    #[test]
+    fn histogram_buckets_are_cumulative_and_boundary_inclusive() {
+        let mut h = Histogram::new();
+        h.observe(0.005); // exactement sur la 1re borne -> comptée dedans
+        h.observe(0.006); // au-dessus de 0.005, sous 0.01
+                          // le=0.005 : seule 0.005 (inclusif) -> 1
+        assert_eq!(h.buckets[0], 1);
+        // le=0.01 : 0.005 et 0.006 -> 2 (cumulatif)
+        assert_eq!(h.buckets[1], 2);
+        assert_eq!(h.count, 2);
+        assert!((h.sum - 0.011).abs() < 1e-9);
+    }
+
+    #[test]
+    fn histogram_value_beyond_last_bucket_only_in_inf() {
+        let mut h = Histogram::new();
+        h.observe(100.0); // > 10.0 (dernière borne)
+        for b in h.buckets {
+            assert_eq!(b, 0); // aucun bucket fini ne la compte
+        }
+        assert_eq!(h.count, 1); // mais bien comptée dans le total (+Inf)
+        assert!((h.sum - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn render_on_empty_registry_still_declares_types() {
+        // Même sans observation, l'exposition doit être valide (HELP + TYPE).
+        let out = Metrics::new().render();
+        assert!(out.contains("# TYPE http_requests_total counter"));
+        assert!(out.contains("# TYPE http_request_duration_seconds histogram"));
+    }
+
+    #[test]
+    fn default_matches_new() {
+        // `Default` ne doit pas diverger de `new` (registre vide).
+        assert_eq!(Metrics::default().render(), Metrics::new().render());
+    }
+
+    #[test]
+    fn latency_beyond_max_bucket_shows_in_inf_and_sum_via_render() {
+        let m = Metrics::new();
+        m.observe_request("GET", "/health", 200, 42.0);
+        let out = m.render();
+        assert!(out.contains(
+            "http_request_duration_seconds_bucket{method=\"GET\",route=\"/health\",le=\"10\"} 0"
+        ));
+        assert!(out.contains(
+            "http_request_duration_seconds_bucket{method=\"GET\",route=\"/health\",le=\"+Inf\"} 1"
+        ));
+        assert!(
+            out.contains("http_request_duration_seconds_sum{method=\"GET\",route=\"/health\"} 42")
+        );
+    }
 }

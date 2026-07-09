@@ -67,4 +67,35 @@ mod tests {
         assert_ne!(a.plaintext, b.plaintext);
         assert_ne!(a.hash, b.hash);
     }
+
+    #[test]
+    fn hash_matches_known_sha256_vectors() {
+        // Vecteurs SHA-256 de référence (hex minuscule) : garantit que
+        // `hash_refresh_token`/`hex_encode` produisent l'empreinte attendue.
+        assert_eq!(
+            hash_refresh_token(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hash_refresh_token("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn hash_is_deterministic_and_input_sensitive() {
+        assert_eq!(
+            hash_refresh_token("token-xyz"),
+            hash_refresh_token("token-xyz")
+        );
+        assert_ne!(
+            hash_refresh_token("token-xyz"),
+            hash_refresh_token("token-xyw")
+        );
+        // Toujours 64 caractères hex, quelle que soit l'entrée.
+        assert_eq!(hash_refresh_token("💥").len(), 64);
+        assert!(hash_refresh_token("💥")
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
 }

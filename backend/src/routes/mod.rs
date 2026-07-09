@@ -173,3 +173,30 @@ fn build_cors(origins: &[String]) -> CorsLayer {
 async fn handler_404() -> crate::errors::ApiError {
     crate::errors::ApiError::NotFound
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn handler_404_returns_not_found() {
+        assert!(matches!(
+            handler_404().await,
+            crate::errors::ApiError::NotFound
+        ));
+    }
+
+    #[test]
+    fn build_cors_tolerates_invalid_and_empty_origins() {
+        // Config incohérente : origines invalides filtrées, jamais de panique.
+        // (Une valeur non convertible en HeaderValue est simplement ignorée.)
+        let mixed = vec![
+            "https://ok.example.com".to_string(),
+            "pas une entête\nvalide".to_string(),
+            String::new(),
+        ];
+        let _ = build_cors(&mixed);
+        // Liste vide : la couche se construit quand même (aucune origine permise).
+        let _ = build_cors(&[]);
+    }
+}

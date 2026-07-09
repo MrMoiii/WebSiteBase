@@ -83,4 +83,45 @@ mod tests {
         let hash = hash_password("x-very-strong-1").unwrap();
         assert!(hash.starts_with("$argon2id$"));
     }
+
+    #[test]
+    fn verify_with_corrupted_hash_is_error_not_false() {
+        // Un hash stocké illisible doit remonter une ERREUR interne (corruption
+        // à traiter), et non un `Ok(false)` silencieux qui masquerait le problème.
+        for corrupt in ["", "not-a-phc-string", "plain$$$text"] {
+            assert!(
+                verify_password("whatever", corrupt).is_err(),
+                "hash corrompu accepté: {corrupt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_wrong_password_is_ok_false_not_error() {
+        // Distinction clé : mauvais mot de passe => Ok(false) (pas une erreur).
+        let hash = hash_password("the-real-password-12").unwrap();
+        assert!(!verify_password("wrong", &hash).unwrap());
+    }
+
+    #[test]
+    fn handles_empty_and_long_passwords() {
+        // Chaîne vide : hachable et vérifiable (la borne min est imposée en amont
+        // par la validation du DTO, pas par cette couche cryptographique).
+        let h = hash_password("").unwrap();
+        assert!(verify_password("", &h).unwrap());
+        assert!(!verify_password("x", &h).unwrap());
+
+        // Mot de passe long (128, borne du DTO) : fonctionne.
+        let long = "p".repeat(128);
+        let h = hash_password(&long).unwrap();
+        assert!(verify_password(&long, &h).unwrap());
+    }
+
+    #[test]
+    fn handles_unicode_passwords() {
+        let pw = "コルレクトホース🐴-Éà";
+        let h = hash_password(pw).unwrap();
+        assert!(verify_password(pw, &h).unwrap());
+        assert!(!verify_password("コルレクトホース🐴-Éb", &h).unwrap());
+    }
 }
