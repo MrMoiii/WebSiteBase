@@ -2,8 +2,9 @@
 
 API REST de gestion d'utilisateurs, développée avec une posture sécurité
 maximale. Stack : **Axum + Tokio**, **PostgreSQL via sqlx** (requêtes vérifiées
-à la compilation), **Argon2id**, **JWT courts + refresh tokens révocables**,
-logs **JSON structurés** (tracing).
+à la compilation), **sessions Redis** (source de vérité, révocation immédiate),
+**Argon2id**, **JWT courts + refresh tokens révocables**, logs **JSON
+structurés** (tracing).
 
 > Voir [`SECURITY.md`](./SECURITY.md) pour le modèle de menace, les contrôles
 > implémentés (mappés sur l'OWASP API Security Top 10) et les limites connues.
@@ -37,7 +38,7 @@ backend/
 │   ├── config.rs          # chargement strict de la config (fail-fast)
 │   ├── telemetry.rs       # logs JSON structurés (tracing)
 │   ├── errors.rs          # type d'erreur central -> réponses HTTP génériques
-│   ├── state.rs           # état applicatif partagé (config + pool)
+│   ├── state.rs           # état partagé (config, pool, sessions Redis, métriques)
 │   ├── auth/              # mots de passe (argon2), JWT, refresh tokens
 │   ├── db/                # accès données (sqlx query!/query_as!)
 │   ├── models/            # DTO validés (serde + garde) et vues
@@ -51,7 +52,7 @@ backend/
 ├── docker/initdb/         # init de la base de dev (rôle DML-only + droits)
 ├── tests/integration.rs   # tests d'intégration (nominal + cas d'attaque)
 ├── Dockerfile             # multi-stage -> image distroless non-root
-├── docker-compose.yml     # Postgres + API pour le développement
+├── docker-compose.yml     # Postgres + Redis + API pour le développement
 ├── deny.toml              # politique licences + advisories (cargo-deny)
 └── .github/workflows/ci.yml
 ```
@@ -59,7 +60,7 @@ backend/
 ## Prérequis
 
 - **Rust** stable (toolchain épinglée via `rust-toolchain.toml`).
-- **PostgreSQL 16** (local) ou **Docker** + **Docker Compose**.
+- **PostgreSQL 16** et **Redis 7** (local) ou **Docker** + **Docker Compose**.
 - Pour les migrations : `cargo install sqlx-cli --no-default-features --features native-tls,postgres`.
 
 ## Variables d'environnement
@@ -115,8 +116,8 @@ seule**, **toutes capabilities Linux retirées** et `no-new-privileges`.
 ```bash
 cd backend
 
-# 1) Lancer une base (Docker) ou utiliser une instance locale
-docker compose up -d db
+# 1) Lancer une base + Redis (Docker) ou utiliser des instances locales
+docker compose up -d db redis
 
 # 2) Préparer .env
 cp .env.example .env   # ajuster si besoin
@@ -165,14 +166,20 @@ cargo test
 
 Couverture :
 
-- **Unitaires** : hachage/vérification Argon2, génération/empreinte des refresh
-  tokens, émission/validation JWT (falsification, mauvais secret/émetteur),
-  validation des DTO (`deny_unknown_fields`, bornes), en-têtes de sécurité.
-- **Intégration** : flux nominaux (register/login/refresh/logout, profil, admin)
-  **et cas d'attaque** : payload malformé (400), dépassement de taille (413),
-  champ inconnu (rejeté), accès non authentifié (401), accès admin par un
-  non-admin (403), tentative d'IDOR (l'identifiant vient du token, pas de l'URL),
-  énumération d'utilisateurs (réponses génériques).
+- **Unitaires** (base exhaustive, `cargo test --lib`) : chargement/validation de
+  la config (bornes, non-fuite des `Secret`, `from_env`), hachage/vérification
+  Argon2 (mauvais mdp vs hash corrompu), refresh tokens (empreinte SHA-256),
+  émission/validation JWT (falsification, expiration, `typ`, émetteur, champs
+  inconnus), validation des DTO (`deny_unknown_fields`, bornes de taille),
+  mapping des erreurs (statut/code, **non-fuite** du détail interne), résolution
+  d'IP anti-spoofing XFF, helpers de sessions/monitoring, en-têtes de sécurité.
+- **Intégration** (base PostgreSQL **+ Redis**) : flux nominaux
+  (register/login/refresh/logout, profil, admin, **gestion des sessions
+  actives**) **et cas d'attaque** : payload malformé (400), dépassement de taille
+  (413), champ inconnu (rejeté), accès non authentifié (401), accès admin par un
+  non-admin (403), **révocation immédiate** après logout, « déconnexion des
+  autres » (la session courante survit), tentative d'IDOR (l'identifiant vient du
+  token, pas de l'URL), énumération d'utilisateurs (réponses génériques).
 
 ## Qualité & sécurité
 

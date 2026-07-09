@@ -71,8 +71,8 @@ frontend/
 ## Prérequis
 
 - **Node.js ≥ 22** et npm.
-- Le **backend** ([`../backend`](../backend)) et sa base PostgreSQL pour les
-  parcours authentifiés et les tests E2E.
+- Le **backend** ([`../backend`](../backend)) et ses dépendances PostgreSQL +
+  Redis pour les parcours authentifiés et les tests E2E.
 
 ## Variables d'environnement
 
@@ -174,7 +174,7 @@ export E2E_ADMIN_PASSWORD=mot-de-passe-admin-123
 - CI ([`.github/workflows/frontend-ci.yml`](../.github/workflows/frontend-ci.yml)) :
   typecheck, ESLint (0 warning), audit, tests unitaires, build, **check
   anti-fuite de secrets dans le bundle client**, puis E2E Playwright contre le
-  vrai backend Axum + PostgreSQL.
+  vrai backend Axum + PostgreSQL + Redis.
 
 ## Déploiement & reverse proxy
 

@@ -22,7 +22,7 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
 | Anonyme réseau | Envoi de requêtes arbitraires, payloads malformés, bruteforce, énumération. |
 | Utilisateur authentifié | Tente l'accès à des ressources d'autrui (IDOR) ou des endpoints admin. |
 | Vol de jeton | Récupère un token d'accès (XSS, fuite log) ou un refresh token. |
-| Compromission DB en lecture | Accède au contenu des tables (hashes, empreintes de tokens). |
+| Compromission DB / Redis en lecture | Accède au contenu des tables (hashes) ou au store de sessions Redis (empreintes SHA-256 des refresh tokens). |
 
 ## Contrôles implémentés (mapping OWASP API Security Top 10:2023)
 
@@ -34,11 +34,22 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
 ### API2 — Broken Authentication
 - Mots de passe hachés avec **Argon2id** (m=19 MiB, t=2, p=1, OWASP).
 - **JWT d'accès courts** (15 min, HS256) : signature, expiration, émetteur et
-  **type** (`typ=access`) vérifiés ; rejet générique (401) sinon.
-- **Refresh tokens** : valeur aléatoire 256 bits, **stockée hachée** (SHA-256),
-  **révocable** et **tournée** à chaque refresh (rotation). Logout révoque.
-- **Anti-bruteforce** : verrouillage de compte après N échecs + **rate limiting
-  par IP** sur `/auth/*`.
+  **type** (`typ=access`) vérifiés ; rejet générique (401) sinon. Chaque token
+  porte un `sid` (identifiant de session).
+- **Sessions Redis (source de vérité)** : les refresh tokens (valeur aléatoire
+  256 bits, **stockée hachée** SHA-256) et l'état de session vivent dans **Redis**,
+  avec **rotation atomique** (`GETDEL` : un seul appelant gagne, un rejeu ou une
+  requête concurrente obtient `nil` ⇒ 401), TTL glissant (idle) + plafond absolu.
+  Cf. [`SESSIONS.md`](./SESSIONS.md).
+- **Révocation immédiate des tokens d'accès** : le `sid` est revérifié dans Redis
+  à **chaque** requête authentifiée ; un logout, une révocation ciblée ou une
+  « déconnexion des autres appareils » invalide le token d'accès **sans attendre
+  son expiration**.
+- **Anti-bruteforce distribué** : verrouillage de compte après N échecs + **rate
+  limiting par IP**, tous deux portés par **Redis** (cohérents entre instances),
+  en complément du `tower_governor` en mémoire (première ligne anti-rafale) sur
+  `/auth/*`. Les compteurs `INCR`+`EXPIRE` sont posés atomiquement (`MULTI`) pour
+  qu'une clé ne puisse jamais rester sans TTL (pas de verrouillage permanent).
 - **Anti-énumération** : login renvoie une 401 générique et exécute une
   vérification factice pour égaliser le temps de réponse (utilisateur inexistant
   vs mauvais mot de passe indiscernables).
@@ -53,13 +64,16 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
 - **Limite de taille de corps** globale (1 Mo, configurable) → 413.
 - **Timeout** par requête (15 s) → 408.
 - **Pagination bornée** (`page_size` ≤ 100) sur le listing admin.
-- **Rate limiting** par IP sur les endpoints sensibles (`tower_governor`).
+- **Rate limiting** par IP sur les endpoints sensibles : `tower_governor` en
+  mémoire (par instance) **+** compteur distribué Redis (cohérent multi-instances).
 - Longueur des mots de passe bornée (anti-DoS de hachage Argon2).
 - Pool de connexions DB borné.
 
 ### API5 — Broken Function Level Authorization
 - L'autorisation est vérifiée **au niveau du handler** via les extracteurs
   `AuthUser` / `AdminUser`, **pas seulement au routage**.
+- `AuthUser` vérifie en plus que la **session est active dans Redis** (le `sid`
+  porté par le token) : une session révoquée bloque l'accès immédiatement.
 - `AdminUser` **recharge le rôle courant en base** : un changement de privilège
   ou une suppression de compte prend effet immédiatement (sans attendre
   l'expiration du token). Test : accès admin par un non-admin → 403.
@@ -122,14 +136,11 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
   architecture multi-services, privilégier **RS256/EdDSA** (clé publique
   distribuable) ou la **délégation OIDC à un IdP externe** (recommandé par
   l'énoncé) — non implémenté ici par souci de périmètre.
-- **Révocation des tokens d'accès** : un token d'accès volé reste valide jusqu'à
-  expiration (15 min). La revérification du compte en base à chaque requête
-  limite l'impact (compte supprimé/rétrogradé bloqué immédiatement), mais ne
-  révoque pas un token d'accès individuel avant son `exp`. Une liste de
-  révocation (jti) pourrait être ajoutée si nécessaire.
-- **Rate limiting en mémoire** : `tower_governor` est par-instance. En
-  déploiement multi-réplicas, prévoir un store partagé (Redis) pour un quota
-  global, et/ou un rate limiting au niveau du reverse proxy.
+- **Dépendance à Redis (disponibilité)** : le store de sessions Redis est
+  désormais **indispensable à l'authentification** (source de vérité). Une
+  indisponibilité renvoie `503` sur les requêtes authentifiées (le client peut
+  réessayer) plutôt qu'un comportement dégradé — arbitrage cohérence > continuité
+  assumé. Prévoir Redis en HA (`rediss://`, réplication) en production.
 - **CSRF** : la protection repose sur `SameSite=Strict` + l'usage du Bearer pour
   les mutations. Si des mutations basées cookie étaient ajoutées, prévoir un
   jeton anti-CSRF explicite (double-submit / synchronizer token).
@@ -137,8 +148,6 @@ connues**. Il complète le code, qui est commenté aux endroits sensibles.
   itération.
 - **Rotation/expiration des secrets** et **chiffrement au repos** de la base :
   délégués à l'infrastructure (gestionnaire de secrets, TDE/volume chiffré).
-- **Purge des refresh tokens expirés** : un index existe ; prévoir un job de
-  nettoyage périodique (non inclus).
 - **`rsa` / RUSTSEC-2023-0071 (faux positif lockfile)** : la crate `rsa` figure
   dans `Cargo.lock` car le driver MySQL **optionnel** de sqlx y est listé (le
   lockfile est un sur-ensemble), mais elle n'est **jamais compilée** (PostgreSQL
