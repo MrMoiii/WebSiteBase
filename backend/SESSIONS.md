@@ -7,10 +7,10 @@ reconstructibles (une re-authentification suffit) et bénéficient du TTL natif
 de Redis.
 
 > Migration : la table `refresh_tokens` et les colonnes `failed_login_attempts`
-> / `locked_until` de `users` ne sont **plus utilisées au runtime** (le flux de
-> session et le verrouillage sont dans Redis). Elles sont laissées en place
-> pour l'instant (elles pourront être retirées par une migration dédiée, une
-> fois le cache `.sqlx` régénéré contre une base).
+> / `locked_until` de `users` (devenues inutiles, le flux de session et le
+> verrouillage étant dans Redis) ont été **retirées** par la migration
+> `20260709000001_drop_legacy_sessions.sql`, et le cache `.sqlx` régénéré en
+> conséquence. PostgreSQL ne conserve donc plus aucune donnée de session.
 
 ## Sommaire
 
